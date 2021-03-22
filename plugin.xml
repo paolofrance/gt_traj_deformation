@@ -1,0 +1,9 @@
+<library path="lib/libgt_traj_deformation">
+  <class name="cnr/control/GtTrajDeformation"
+         type="cnr::control::GtTrajDeformation"
+         base_class_type="controller_interface::ControllerBase">
+    <description>
+      The Joint Teleop controller
+    </description>
+  </class>
+</library>
