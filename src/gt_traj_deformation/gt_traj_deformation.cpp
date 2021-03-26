@@ -4,6 +4,8 @@
 #include <geometry_msgs/PoseStamped.h>
 #include <pluginlib/class_list_macros.h>
 #include <Eigen/Dense>
+#include <eigen_conversions/eigen_msg.h>
+
 
 PLUGINLIB_EXPORT_CLASS(cnr::control::GtTrajDeformation  , controller_interface::ControllerBase)
 
@@ -114,6 +116,7 @@ bool GtTrajDeformation::doInit()
   cart_pos_ref_pub = this->template add_publisher<geometry_msgs::PoseStamped>("pose_ref",5);
   cart_pos_cur_pub = this->template add_publisher<geometry_msgs::PoseStamped>("pose_cur",5);
   cart_pos_err_pub = this->template add_publisher<geometry_msgs::PoseStamped>("pose_err",5);
+  ee_pos_pub = this->template add_publisher<geometry_msgs::PoseStamped>("pose_ee",5);
 
 
   this->setPriority(this->QD_PRIORITY);
@@ -141,10 +144,6 @@ bool GtTrajDeformation::doInit()
   // system params initi
   m_X .resize(4);
   m_dX.resize(4);
-  
-  m_M.setZero();
-  m_D.setZero();
-  m_K.setZero(); 
   
   m_Q_hat.setZero();
   m_R_hat.setZero();
@@ -177,12 +176,14 @@ bool GtTrajDeformation::doInit()
   GET_PARAM_VECTOR_AND_RETURN ( this->getControllerNh(), "M_r", M_r, 6 , "<=" ); 
   GET_PARAM_VECTOR_AND_RETURN ( this->getControllerNh(), "K_r", K_r, 6 , "<"  ); 
   GET_PARAM_VECTOR_AND_RETURN ( this->getControllerNh(), "D_r", D_r, 6 , "<"  ); 
+
+
+  Eigen::Vector6d M = Eigen::Vector6d( M_r.data() );
+  Eigen::Vector6d D = Eigen::Vector6d( D_r.data() );
+  Eigen::Vector6d K = Eigen::Vector6d( K_r.data() );
+
   
-  m_M = Eigen::Vector6d( M_r.data() );
-  m_D = Eigen::Vector6d( D_r.data() );
-  m_K = Eigen::Vector6d( K_r.data() );
-  
-  std::vector<double> Q_hat(6,0), R_hat(6,0), Qr(6,0), Rr(6,0);
+  std::vector<double> Q_hat, R_hat, Qr, Rr;
   GET_PARAM_VECTOR_AND_RETURN ( this->getControllerNh(), "Q_hat", Q_hat, 4 , "<" );
   GET_PARAM_VECTOR_AND_RETURN ( this->getControllerNh(), "R_hat", R_hat, 4 , "<" );
   GET_PARAM_VECTOR_AND_RETURN ( this->getControllerNh(), "Qr"   , Qr   , 4 , "<" );
@@ -197,37 +198,42 @@ bool GtTrajDeformation::doInit()
   m_A.block(0,2,2,2) = one.asDiagonal();
 
   Eigen::Vector2d stiff;
-  stiff << -m_K(0)/m_M(0), -m_K(1)/m_M(1);
+  stiff << -K(0)/M(0), -K(1)/M(1);
   m_A.block(2,0,2,2) = stiff.asDiagonal();
 
   Eigen::Vector2d damp;
-  damp << -m_D(0)/m_M(0), -m_D(1)/m_M(1);
+  damp << -D(0)/M(0), -D(1)/M(1);
   m_A.block(2,2,2,2) = damp.asDiagonal();
 
-  ROS_FATAL_STREAM(m_A);
-//  m_A(0,2) = 1;
-//  m_A(1,3) = 1;
-//  m_A(2,0) = -m_K(0)/m_M(0);
-//  m_A(3,1) = -m_K(1)/m_M(1);
-//  m_A(2,2) = -m_D(0)/m_M(0);
-//  m_A(3,3) = -m_D(1)/m_M(1);
-  
-  m_Bh(2,0) = 1/m_M(0);
-  m_Bh(3,1) = 1/m_M(1);
-  
-  m_Br(2,0) = 1/m_M(0);
-  m_Br(3,1) = 1/m_M(1);
-  
+  Eigen::Vector2d bb;
+  bb << 1/M(0), 1/M(1);
+  m_Bh.block(2,0,2,2) = bb.asDiagonal();
+  m_Br.block(2,0,2,2) = bb.asDiagonal();
+
   m_B << m_Bh, m_Br;
-  
+
+  m_C.resize(2,4);
+  m_C.setZero();
+  m_C.block(0,0,2,2) = one.asDiagonal();
+
+
+  m_D.resize(2,4);
+  m_D.setZero();
+
+  m_S.resize(m_A.rows()+m_C.rows(),m_A.cols()+m_B.cols());
+  m_S << m_A,m_B,
+         m_C,m_D;
+
+  ROS_FATAL_STREAM("\n"<<m_S);
   m_w_b_init = false;
   
   GET_AND_RETURN(this->getControllerNh(), "rho", m_rho);
   GET_AND_RETURN(this->getControllerNh(), "omega", m_omega);
 
-  GET_AND_RETURN(this->getControllerNh(), "sigmoid_width", m_width);
-  GET_AND_RETURN(this->getControllerNh(), "sigmoid_offset", m_offset);
-
+  GET_AND_RETURN(this->getControllerNh(), "sigmoid_width" , m_width );
+  GET_AND_RETURN(this->getControllerNh(), "sigmoid_half_x", m_half_x);
+  GET_AND_RETURN(this->getControllerNh(), "sigmoid_height", m_height);
+  GET_AND_RETURN(this->getControllerNh(), "sigmoid_max_y" , m_max_y );
   
   CNR_RETURN_TRUE(this->logger());
 }
@@ -237,22 +243,33 @@ bool GtTrajDeformation::doInit()
  * @param time
  */
 bool GtTrajDeformation::doStarting(const ros::Time& /*time*/)
-{
+{;
   CNR_TRACE_START(this->logger(),"Starting Controller");
+
+  ros::Duration(0.1).sleep();
+
   m_pos_sp = this->getPosition();
   m_pos_init = m_pos_sp;
   Eigen::Vector3d x = m_chain.getTransformation(m_pos_init).translation();
-  
   m_X << x[0],x[1],0,0;
+
+  ROS_FATAL_STREAM("q init 1: "<<m_pos_init.transpose());
+  ROS_FATAL_STREAM("x 1: "<<x.transpose());
+  ROS_FATAL_STREAM("m_X 1: "<<m_X.transpose()<<"\n\n\n\n\n\n\n\n\n");
   m_X_init = m_X;
   m_X_ref = m_X;
   m_dX << 0,0,0,0;
   m_init_time = 0;
   
   m_vel_sp = 0 * this->getVelocity();
+  m_vel_sp_last = m_vel_sp;
+
+
+
+
+
+
   CNR_RETURN_TRUE(this->logger());
-  m_vel_sp_last = m_vel_sp;  
-  
 }
 
 /**
@@ -284,13 +301,13 @@ bool GtTrajDeformation::doUpdate(const ros::Time& /*time*/, const ros::Duration&
   ROS_DEBUG_STREAM_THROTTLE(.2,"ext wrench: "<<m_w_b.transpose());
   
   Eigen::Vector2d human_wrench;
-  human_wrench << m_w_b(0), m_w_b(1);
+  human_wrench << m_w_b(0),0;//, m_w_b(1);
   double norm_wrench = human_wrench.norm();
 //   ROS_FATAL_STREAM_THROTTLE(.2,"human wrench: "<<human_wrench.transpose());
 //   ROS_FATAL_STREAM_THROTTLE(.2,"norm wrench: "<<norm_wrench);
   
   double alpha = sigma(norm_wrench);
-     ROS_FATAL_STREAM_THROTTLE(.2,"alpha: "<<alpha);
+//     ROS_FATAL_STREAM_THROTTLE(.2,"alpha: "<<alpha);
   
   Eigen::MatrixXd A = m_A;
   Eigen::MatrixXd B = m_B;
@@ -303,16 +320,45 @@ bool GtTrajDeformation::doUpdate(const ros::Time& /*time*/, const ros::Duration&
   Eigen::MatrixXd K = R.inverse()*B.transpose()*P;
   
   m_init_time += period.toSec();
-//  m_X_ref(0) = m_X_init(0) + m_rho*sin(m_omega*(m_init_time));
-//  m_X_ref(1) = m_X_init(1) + m_rho*cos(m_omega*(m_init_time));
-  m_X_ref(0) = m_X_init(0);
-  m_X_ref(1) = m_X_init(1);
-  
-  Eigen::Vector4d u = -K*(m_X-m_X_ref);
+  m_X_ref(0) = m_X_init(0) + m_rho*sin(m_omega*(m_init_time));
+  m_X_ref(1) = m_X_init(1) + m_rho*cos(m_omega*(m_init_time));
+//  m_X_ref(0) = m_X_init(0);
+//  m_X_ref(1) = m_X_init(1);
+
+  Eigen::Vector4d ufb = -K*(m_X-m_X_init);
+
+  Eigen::Vector4d one(1,1,1,1);
+  Eigen::MatrixXd eye = one.asDiagonal();
+
+  Eigen::MatrixXd kk;
+  kk.resize(K.rows(),K.cols()+eye.cols());
+  kk << K, eye;
+
+  Eigen::CompleteOrthogonalDecomposition<Eigen::MatrixXd> cqr(m_S);
+  Eigen::MatrixXd pinS= cqr.pseudoInverse();
+
+  Eigen::Matrix<double, 6, 2> g;
+
+  g << 0,0,
+       0,0,
+       0,0,
+       0,0,
+       1,0,
+       0,1;
+
+  Eigen::VectorXd uff = kk*pinS*g*m_X_ref;
+  ROS_FATAL_STREAM_THROTTLE(.2,"kk: "<<kk);
+  ROS_FATAL_STREAM_THROTTLE(.2,"pins: "<<pinS);
+  ROS_FATAL_STREAM_THROTTLE(.2,"g: "<<g);
+
+  Eigen::Vector2d u_shr;
+  u_shr << uff.segment(0,2)+uff.segment(2,2);
+
+  ROS_FATAL_STREAM_THROTTLE(.2,"ushr: "<<u_shr);
   
   Eigen::Vector2d ur;
-  ur(0) = u(2);
-  ur(1) = u(3);
+  ur(0) = ufb(2);
+  ur(1) = ufb(3);
   
 //   human_wrench <<0,0;
   
@@ -323,29 +369,38 @@ bool GtTrajDeformation::doUpdate(const ros::Time& /*time*/, const ros::Duration&
 //   ROS_FATAL_STREAM_THROTTLE(.2,"dX: "<<m_dX.transpose());
 //   ROS_FATAL_STREAM_THROTTLE(.2,"X: "<<m_X.transpose());
 //   ROS_FATAL_STREAM_THROTTLE(.2,"current_x: "<<x.transpose());
-//   ROS_FATAL_STREAM_THROTTLE(.2,"x ref: "<m_X_ref.transpose());
+//   ROS_FATAL_STREAM_THROTTLE(.2,"x ref: "<<m_X_ref.transpose());
+//   ROS_FATAL_STREAM_THROTTLE(.2,"err_X: "<<err_X.transpose());
   
   Eigen::Vector6d dx;
   dx.setZero();
   dx(0) = m_dX(0);
-  dx(1) = m_dX(1);
+//  dx(1) = m_dX(1);
   
   
   m_pos = this->getPosition();
   Eigen::Matrix6Xd J_b = m_chain.getJacobian ( m_pos );
+     ROS_FATAL_STREAM_THROTTLE(.2,"m_pos: "<<m_pos.transpose());
   Eigen::FullPivLU<Eigen::MatrixXd> pinv_J ( J_b );
-  pinv_J.setThreshold ( 1e-6 );
-  
+  pinv_J.setThreshold ( 1e-2 );
+
+  if(pinv_J.rank() < 6)
+  {
+     ROS_FATAL_STREAM("\n\n\n\n\n\n\n pinv.rank: "<< pinv_J.rank() <<" \n");
+     ROS_FATAL_STREAM("\n\n pinv: \n"<< pinv_J.matrixLU() <<" \n\n\n\n\n\n\n");
+  }
   rosdyn::VectorXd vel_sp = pinv_J.solve(dx);
+//  rosdyn::VectorXd vel_sp = J_b.inverse() * dx;
   m_vel_fitler_sp.update(vel_sp);
-  pos_sp = m_pos_sp  + m_vel_fitler_sp.getUpdatedValue()  * period.toSec();
+//  pos_sp = m_pos_sp  + m_vel_fitler_sp.getUpdatedValue()  * period.toSec();
+  pos_sp = m_pos_sp  + vel_sp  * period.toSec();
 
   m_pos_sp  = pos_sp;
   m_vel_sp  = vel_sp;
   rosdyn::VectorXd q_error = m_pos_init - pos_sp;
-//  ROS_FATAL_STREAM_THROTTLE(.2,"q_sp: "<<pos_sp.transpose());
-//  ROS_FATAL_STREAM_THROTTLE(.2,"q_error: "<<q_error.transpose());
-//   ROS_FATAL_STREAM_THROTTLE(.2,"vel_sp: "<<vel_sp.transpose());
+//  ROS_FATAL_STREAM_THROTTLE(.2,"pos_sp: "<<pos_sp.transpose());
+//  ROS_FATAL_STREAM_THROTTLE(.2,"m_pos_init: "<<m_pos_init.transpose());
+//  ROS_FATAL_STREAM_THROTTLE(.2,"m_pos: "<<m_pos.transpose());
   
   this->setCommandPosition( pos_sp );
   this->setCommandVelocity( m_vel_fitler_sp.getUpdatedValue() );
@@ -359,16 +414,24 @@ bool GtTrajDeformation::doUpdate(const ros::Time& /*time*/, const ros::Duration&
   Eigen::Vector3d rrr = init - x_curr;
   Eigen::Vector3d x_sp = m_chain.getTransformation(pos_sp).translation();
 
-    ROS_FATAL_STREAM_THROTTLE(.2,"x_sp: "<<x_sp.transpose());
+//    ROS_FATAL_STREAM_THROTTLE(.2,"x_sp: "<<x_sp.transpose());
+
+    if(x_sp(0)>0.8)
+    {
+        ROS_FATAL_STREAM("\n\n\n\n\n\n\n\nx_sp: "<<x_sp.transpose());
+        ROS_FATAL_STREAM("pos_sp: "<<pos_sp.transpose());
+        ROS_FATAL_STREAM("vel_sp: "<<vel_sp.transpose()<<"\n\n\n\n");
+    }
   //  ROS_FATAL_STREAM_THROTTLE(.2,"x_curr: "<<x_curr.transpose());
 //  ROS_FATAL_STREAM_THROTTLE(.2,"init: "<<init.transpose());
 //  ROS_FATAL_STREAM_THROTTLE(.2,"rr: "<<rrr.transpose());
-//  ROS_FATAL_STREAM_THROTTLE(.2,"X: "<<m_X.transpose());
+  ROS_FATAL_STREAM_THROTTLE(.2,"X: "<<m_X.transpose());
 //  ROS_FATAL_STREAM_THROTTLE(.2,"X ref: "<<m_X_ref.transpose());
 
   geometry_msgs::PoseStamped ref_pos;
   geometry_msgs::PoseStamped cur_pos;
   geometry_msgs::PoseStamped err_pos;
+  geometry_msgs::PoseStamped ee_pos;
 
   ref_pos.header.frame_id = "ur5_base_link";
   ref_pos.header.stamp = ros::Time::now();
@@ -385,9 +448,20 @@ bool GtTrajDeformation::doUpdate(const ros::Time& /*time*/, const ros::Duration&
   err_pos.pose.position.x = m_X(0)-x_curr(0);
   err_pos.pose.position.y = m_X(1)-x_curr(1);
 
+  Eigen::Affine3d ee_eig = m_chain.getTransformation(curr_q);
+
+  ee_pos.header.frame_id = "ur5_base_link";
+  ee_pos.header.stamp = ros::Time::now();
+  ee_pos.pose.position.x = ee_eig.translation()(0);
+  ee_pos.pose.position.y = ee_eig.translation()(1);
+  ee_pos.pose.position.z = ee_eig.translation()(2);
+
   this->publish(cart_pos_ref_pub,ref_pos);
   this->publish(cart_pos_cur_pub,cur_pos);
   this->publish(cart_pos_err_pub,err_pos);
+  this->publish(ee_pos_pub,ee_pos);
+
+
 
 
   CNR_RETURN_TRUE_THROTTLE_DEFAULT(this->logger());
@@ -478,8 +552,7 @@ void GtTrajDeformation::callback(const geometry_msgs::WrenchStampedConstPtr& msg
 
 double GtTrajDeformation::sigma(double x)
 {
-  double height = 0.98;
-  return 1-(0.01 + height/(1+exp(-m_width*(x-m_offset))));
+  return m_max_y -(m_height/(1+exp(-m_width*(x-m_half_x))));
 }
 
 bool GtTrajDeformation::solveRiccatiArimotoPotter(const Eigen::MatrixXd &A,

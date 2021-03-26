@@ -53,15 +53,14 @@ protected:
   Eigen::VectorXd   m_X_ref;
   Eigen::VectorXd   m_X;
   Eigen::VectorXd   m_dX;
-  
-  Eigen::Vector6d   m_M;
-  Eigen::Vector6d   m_D;
-  Eigen::Vector6d   m_K;
     
   Eigen::Matrix<double, 4, 4> m_A;
   Eigen::Matrix<double, 4, 2> m_Bh;
   Eigen::Matrix<double, 4, 2> m_Br;
   Eigen::MatrixXd m_B;
+  Eigen::MatrixXd m_C;
+  Eigen::MatrixXd m_D;
+  Eigen::MatrixXd m_S;
 
   Eigen::Matrix<double, 4, 4> m_Q_hat;
   Eigen::Matrix<double, 4, 4> m_R_hat;
@@ -83,12 +82,16 @@ protected:
   size_t cart_pos_ref_pub;
   size_t cart_pos_cur_pub;
   size_t cart_pos_err_pub;
+  size_t ee_pos_pub;
   
   double m_init_time;
   double m_rho;
   double m_omega;
-  double m_width;
-  double m_offset;
+  double m_width ;
+  double m_half_x;
+  double m_height;
+  double m_max_y ;
+
 
   double sigma(double x);
   bool solveRiccatiArimotoPotter(const Eigen::MatrixXd &A,
