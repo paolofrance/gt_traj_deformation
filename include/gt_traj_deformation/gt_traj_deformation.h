@@ -39,21 +39,18 @@ public:
 protected:
 
   std::mutex m_mtx;
-  bool       m_has_pos_sp;
 
   ect::FilteredVectorXd m_vel_fitler_sp;
-  rosdyn::VectorXd m_vel_sp;
-  rosdyn::VectorXd m_pos_sp;
-  rosdyn::VectorXd m_pos_init;
-  rosdyn::VectorXd m_dpos_sp;
+  rosdyn::VectorXd m_dq_sp;
+  rosdyn::VectorXd m_q_sp;
   rosdyn::VectorXd m_vel_sp_last;
   rosdyn::VectorXd m_dist_to_pos_sp;
-  
-  Eigen::VectorXd   m_X_init;
+
+  Eigen::VectorXd   m_X_zero;
   Eigen::VectorXd   m_X_ref;
   Eigen::VectorXd   m_X;
   Eigen::VectorXd   m_dX;
-    
+
   Eigen::Matrix<double, 4, 4> m_A;
   Eigen::Matrix<double, 4, 2> m_Bh;
   Eigen::Matrix<double, 4, 2> m_Br;
@@ -67,12 +64,12 @@ protected:
   Eigen::Matrix<double, 4, 4> m_Qr;
   Eigen::Matrix<double, 4, 4> m_Rr;
 
-  rosdyn::VectorXd m_pos;
-  
   bool   m_w_b_init;
   Eigen::Vector6d   m_w_b;
   Eigen::Vector6d   m_w_b_0;
   Eigen::Vector6d   m_wrench_deadband;
+
+  Eigen::Affine3d T_b_t_;
 
   rosdyn::ChainPtr m_chain_bs;
 
@@ -81,9 +78,16 @@ protected:
 
   size_t cart_pos_ref_pub;
   size_t cart_pos_cur_pub;
-  size_t cart_pos_err_pub;
-  size_t ee_pos_pub;
-  
+  size_t cart_pos_sp_pub;
+  size_t cart_pos_traj_pub;
+  size_t alpha_pub;
+  size_t human_wrench_pub;
+  size_t human_u_pub;
+  size_t robot_u_pub;
+  size_t joint_sp_pub;
+  size_t D_pub;
+  size_t K_pub;
+
   double m_init_time;
   double m_rho;
   double m_omega;
@@ -92,9 +96,12 @@ protected:
   double m_height;
   double m_max_y ;
 
+  double m_stiffness;
+  double m_damping;
+  double m_mass;
 
   double sigma(double x);
-  bool solveRiccatiArimotoPotter(const Eigen::MatrixXd &A,
+  bool solveRiccati(const Eigen::MatrixXd &A,
                                const Eigen::MatrixXd &B,
                                const Eigen::MatrixXd &Q,
                                const Eigen::MatrixXd &R, Eigen::MatrixXd &P) ;

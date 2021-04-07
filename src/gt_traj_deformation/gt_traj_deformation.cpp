@@ -5,6 +5,9 @@
 #include <pluginlib/class_list_macros.h>
 #include <Eigen/Dense>
 #include <eigen_conversions/eigen_msg.h>
+#include <std_msgs/Float32.h>
+#include <sensor_msgs/JointState.h>
+#include <rosdyn_core/primitives.h>
 
 
 PLUGINLIB_EXPORT_CLASS(cnr::control::GtTrajDeformation  , controller_interface::ControllerBase)
@@ -81,7 +84,7 @@ inline std::string to_string ( const bool& val )
       }\
     }\
   }\
-    
+
 namespace eu = eigen_utils;
 namespace ect = eigen_control_toolbox;
 
@@ -106,18 +109,25 @@ bool GtTrajDeformation::doInit()
 {
   //INIT PUB/SUB
   std::string external_wrench_topic = "/robotiq_ft_wrench";
-      
+
   this->template add_subscriber<geometry_msgs::WrenchStamped>(
         external_wrench_topic,5,boost::bind(&GtTrajDeformation::callback,this,_1), false);
-  
+
   wrench_base_pub = this->template add_publisher<geometry_msgs::WrenchStamped>("wrench_base",5);
   wrench_tool_pub = this->template add_publisher<geometry_msgs::WrenchStamped>("wrench_tool",5);
 
-  cart_pos_ref_pub = this->template add_publisher<geometry_msgs::PoseStamped>("pose_ref",5);
-  cart_pos_cur_pub = this->template add_publisher<geometry_msgs::PoseStamped>("pose_cur",5);
-  cart_pos_err_pub = this->template add_publisher<geometry_msgs::PoseStamped>("pose_err",5);
-  ee_pos_pub = this->template add_publisher<geometry_msgs::PoseStamped>("pose_ee",5);
+  cart_pos_ref_pub   = this->template add_publisher<geometry_msgs::PoseStamped>("pose_ref"    ,5);
+  cart_pos_cur_pub   = this->template add_publisher<geometry_msgs::PoseStamped>("pose_cur"    ,5);
+  cart_pos_sp_pub    = this->template add_publisher<geometry_msgs::PoseStamped>("pose_sp"     ,5);
+  cart_pos_traj_pub  = this->template add_publisher<geometry_msgs::PoseStamped>("pose_traj"   ,5);
+  joint_sp_pub       = this->template add_publisher<sensor_msgs::JointState>   ("joint_sp"    ,5);
+  alpha_pub          = this->template add_publisher<std_msgs::Float32>         ("alpha"       ,5);
+  human_wrench_pub   = this->template add_publisher<std_msgs::Float32>         ("human_wrench",5);
+  D_pub              = this->template add_publisher<std_msgs::Float32>         ("var_D"       ,5);
+  K_pub              = this->template add_publisher<std_msgs::Float32>         ("var_K"       ,5);
 
+  human_u_pub = this->template add_publisher<geometry_msgs::WrenchStamped>("human_u",5);
+  robot_u_pub = this->template add_publisher<geometry_msgs::WrenchStamped>("robot_u",5);
 
   this->setPriority(this->QD_PRIORITY);
 
@@ -132,28 +142,25 @@ bool GtTrajDeformation::doInit()
   {
     CNR_RETURN_FALSE(this->logger());
   }
-  m_vel_sp = m_vel_fitler_sp.getUpdatedValue();
-  m_pos_sp = this->getPosition();
-  m_pos = this->getPosition();
+  m_dq_sp = m_vel_fitler_sp.getUpdatedValue();
+  m_q_sp = this->getPosition();
 
-  m_has_pos_sp = false;
-  
   m_wrench_deadband .setZero();
   m_w_b             .setZero();
-  
+
   // system params initi
   m_X .resize(4);
   m_dX.resize(4);
-  
+
   m_Q_hat.setZero();
   m_R_hat.setZero();
   m_Qr   .setZero();
   m_Rr   .setZero();
-  
+
   m_A .setZero();
   m_Bh.setZero();
   m_Br.setZero();
-  
+
   m_B.resize(m_Bh.rows(), m_Bh.cols()+m_Br.cols());
 
 
@@ -167,33 +174,36 @@ bool GtTrajDeformation::doInit()
 
   m_chain_bs = rosdyn::createChain ( urdf_model,"ur5_base_link","robotiq_ft_frame_id",gravity );
   // =========================== INIT VAR END
-  
+
   std::vector<double> wrench_deadband(6,0);
   GET_PARAM_VECTOR_AND_RETURN ( this->getControllerNh(), "wrench_deadband", wrench_deadband, 6, "<=" );
   m_wrench_deadband   = Eigen::Vector6d( wrench_deadband.data() );
 
   std::vector<double> M_r(6,0), D_r(6,0), K_r(6,0);
-  GET_PARAM_VECTOR_AND_RETURN ( this->getControllerNh(), "M_r", M_r, 6 , "<=" ); 
-  GET_PARAM_VECTOR_AND_RETURN ( this->getControllerNh(), "K_r", K_r, 6 , "<"  ); 
-  GET_PARAM_VECTOR_AND_RETURN ( this->getControllerNh(), "D_r", D_r, 6 , "<"  ); 
+  GET_PARAM_VECTOR_AND_RETURN ( this->getControllerNh(), "M_r", M_r, 6 , "<=" );
+  GET_PARAM_VECTOR_AND_RETURN ( this->getControllerNh(), "K_r", K_r, 6 , "<"  );
+  GET_PARAM_VECTOR_AND_RETURN ( this->getControllerNh(), "D_r", D_r, 6 , "<"  );
 
 
   Eigen::Vector6d M = Eigen::Vector6d( M_r.data() );
   Eigen::Vector6d D = Eigen::Vector6d( D_r.data() );
   Eigen::Vector6d K = Eigen::Vector6d( K_r.data() );
 
-  
-  std::vector<double> Q_hat, R_hat, Qr, Rr;
+  m_mass = M(0);
+  m_damping = D(0);
+  m_stiffness = K(0);
+
+ std::vector<double> Q_hat(6,0), R_hat(6,0), Qr(6,0), Rr(6,0);
   GET_PARAM_VECTOR_AND_RETURN ( this->getControllerNh(), "Q_hat", Q_hat, 4 , "<" );
   GET_PARAM_VECTOR_AND_RETURN ( this->getControllerNh(), "R_hat", R_hat, 4 , "<" );
   GET_PARAM_VECTOR_AND_RETURN ( this->getControllerNh(), "Qr"   , Qr   , 4 , "<" );
   GET_PARAM_VECTOR_AND_RETURN ( this->getControllerNh(), "Rr"   , Rr   , 4 , "<" );
-  
+
   m_Q_hat.diagonal() << Eigen::Vector4d( Q_hat.data() );
   m_R_hat.diagonal() << Eigen::Vector4d( R_hat.data() );
   m_Qr   .diagonal() << Eigen::Vector4d( Qr.data() );
   m_Rr   .diagonal() << Eigen::Vector4d( Rr.data() );
-  
+
   Eigen::Vector2d one(1,1);
   m_A.block(0,2,2,2) = one.asDiagonal();
 
@@ -226,7 +236,7 @@ bool GtTrajDeformation::doInit()
 
   ROS_FATAL_STREAM("\n"<<m_S);
   m_w_b_init = false;
-  
+
   GET_AND_RETURN(this->getControllerNh(), "rho", m_rho);
   GET_AND_RETURN(this->getControllerNh(), "omega", m_omega);
 
@@ -234,7 +244,8 @@ bool GtTrajDeformation::doInit()
   GET_AND_RETURN(this->getControllerNh(), "sigmoid_half_x", m_half_x);
   GET_AND_RETURN(this->getControllerNh(), "sigmoid_height", m_height);
   GET_AND_RETURN(this->getControllerNh(), "sigmoid_max_y" , m_max_y );
-  
+
+
   CNR_RETURN_TRUE(this->logger());
 }
 
@@ -243,31 +254,24 @@ bool GtTrajDeformation::doInit()
  * @param time
  */
 bool GtTrajDeformation::doStarting(const ros::Time& /*time*/)
-{;
+{
   CNR_TRACE_START(this->logger(),"Starting Controller");
 
-  ros::Duration(0.1).sleep();
+  m_q_sp = this->getPosition();
 
-  m_pos_sp = this->getPosition();
-  m_pos_init = m_pos_sp;
-  Eigen::Vector3d x = m_chain.getTransformation(m_pos_init).translation();
+  Eigen::Vector3d x = this->chainState().toolPose().translation();
+
+  T_b_t_ = this->chainState().toolPose();
+
   m_X << x[0],x[1],0,0;
 
-  ROS_FATAL_STREAM("q init 1: "<<m_pos_init.transpose());
-  ROS_FATAL_STREAM("x 1: "<<x.transpose());
   ROS_FATAL_STREAM("m_X 1: "<<m_X.transpose()<<"\n\n\n\n\n\n\n\n\n");
-  m_X_init = m_X;
+  m_X_zero = m_X;
   m_X_ref = m_X;
   m_dX << 0,0,0,0;
   m_init_time = 0;
-  
-  m_vel_sp = 0 * this->getVelocity();
-  m_vel_sp_last = m_vel_sp;
 
-
-
-
-
+  m_dq_sp = 0 * this->getVelocity();
 
   CNR_RETURN_TRUE(this->logger());
 }
@@ -290,42 +294,43 @@ bool GtTrajDeformation::doStopping(const ros::Time& /*time*/)
  */
 bool GtTrajDeformation::doUpdate(const ros::Time& /*time*/, const ros::Duration& period)
 {
+//    auto start = std::chrono::steady_clock::now();
+
   CNR_TRACE_START_THROTTLE_DEFAULT(this->logger());
   std::stringstream report;
 
   std::lock_guard<std::mutex> lock(m_mtx);
-//  rosdyn::VectorXd vel_sp = m_vel_sp;
-  rosdyn::VectorXd pos_sp = m_pos_sp;
-  
-  
+//  rosdyn::VectorXd dq_sp = m_dq_sp;
+  rosdyn::VectorXd q_sp = m_q_sp;
+
   ROS_DEBUG_STREAM_THROTTLE(.2,"ext wrench: "<<m_w_b.transpose());
-  
+
   Eigen::Vector2d human_wrench;
-  human_wrench << m_w_b(0),0;//, m_w_b(1);
+  human_wrench << m_w_b(0), m_w_b(1);
   double norm_wrench = human_wrench.norm();
-//   ROS_FATAL_STREAM_THROTTLE(.2,"human wrench: "<<human_wrench.transpose());
-//   ROS_FATAL_STREAM_THROTTLE(.2,"norm wrench: "<<norm_wrench);
-  
+
   double alpha = sigma(norm_wrench);
-//     ROS_FATAL_STREAM_THROTTLE(.2,"alpha: "<<alpha);
-  
+
   Eigen::MatrixXd A = m_A;
   Eigen::MatrixXd B = m_B;
   Eigen::MatrixXd Q = alpha*(m_Q_hat)+(1-alpha)*m_Qr;
   Eigen::MatrixXd R = alpha*(m_R_hat)+(1-alpha)*m_Rr;
   Eigen::MatrixXd P = Eigen::MatrixXd::Zero(4, 4);
-  
-  solveRiccatiArimotoPotter(A, B, Q, R, P);
-  
-  Eigen::MatrixXd K = R.inverse()*B.transpose()*P;
-  
-  m_init_time += period.toSec();
-  m_X_ref(0) = m_X_init(0) + m_rho*sin(m_omega*(m_init_time));
-  m_X_ref(1) = m_X_init(1) + m_rho*cos(m_omega*(m_init_time));
-//  m_X_ref(0) = m_X_init(0);
-//  m_X_ref(1) = m_X_init(1);
 
-  Eigen::Vector4d ufb = -K*(m_X-m_X_init);
+  solveRiccati(A, B, Q, R, P);
+
+  Eigen::MatrixXd K = R.inverse()*B.transpose()*P;
+
+  m_init_time += period.toSec();
+  m_X_ref(0) = m_X_zero(0) + m_rho*sin(m_omega*(m_init_time));
+  m_X_ref(1) = m_X_zero(1) + m_rho*cos(m_omega*(m_init_time));
+
+  rosdyn::VectorXd Xi = m_X-m_X_zero;
+
+  Eigen::Vector4d ufb = -K*(Xi);
+
+  double var_K = m_stiffness + K(2,0);
+  double var_D = m_damping   + K(2,2);
 
   Eigen::Vector4d one(1,1,1,1);
   Eigen::MatrixXd eye = one.asDiagonal();
@@ -346,123 +351,142 @@ bool GtTrajDeformation::doUpdate(const ros::Time& /*time*/, const ros::Duration&
        1,0,
        0,1;
 
-  Eigen::VectorXd uff = kk*pinS*g*m_X_ref;
-  ROS_FATAL_STREAM_THROTTLE(.2,"kk: "<<kk);
-  ROS_FATAL_STREAM_THROTTLE(.2,"pins: "<<pinS);
-  ROS_FATAL_STREAM_THROTTLE(.2,"g: "<<g);
+  Eigen::VectorXd uff = kk*pinS*g*(m_X_ref - m_X_zero);
 
   Eigen::Vector2d u_shr;
   u_shr << uff.segment(0,2)+uff.segment(2,2);
 
-  ROS_FATAL_STREAM_THROTTLE(.2,"ushr: "<<u_shr);
-  
+  Eigen::Vector2d uh;
+  uh(0) = ufb(0) + (1 - alpha)*u_shr(0);
+  uh(1) = ufb(1) + (1 - alpha)*u_shr(1);
+
   Eigen::Vector2d ur;
-  ur(0) = ufb(2);
-  ur(1) = ufb(3);
-  
-//   human_wrench <<0,0;
-  
-  m_dX = m_A*m_X + m_Bh*human_wrench+ m_Br*ur;
-  m_X = m_X + m_dX * period.toSec();
-  
-  Eigen::Vector3d x = m_chain.getTransformation(m_pos_sp).translation();
-//   ROS_FATAL_STREAM_THROTTLE(.2,"dX: "<<m_dX.transpose());
-//   ROS_FATAL_STREAM_THROTTLE(.2,"X: "<<m_X.transpose());
-//   ROS_FATAL_STREAM_THROTTLE(.2,"current_x: "<<x.transpose());
-//   ROS_FATAL_STREAM_THROTTLE(.2,"x ref: "<<m_X_ref.transpose());
-//   ROS_FATAL_STREAM_THROTTLE(.2,"err_X: "<<err_X.transpose());
-  
+  ur(0) = ufb(2) + alpha*u_shr(0);
+  ur(1) = ufb(3) + alpha*u_shr(1);
+
+  m_dX = m_A*Xi + m_Bh*human_wrench+ m_Br*ur;
+  Xi = Xi + m_dX * period.toSec();
+
+  m_X = Xi + m_X_zero;
+
   Eigen::Vector6d dx;
   dx.setZero();
   dx(0) = m_dX(0);
-//  dx(1) = m_dX(1);
-  
-  
-  m_pos = this->getPosition();
-  Eigen::Matrix6Xd J_b = m_chain.getJacobian ( m_pos );
-     ROS_FATAL_STREAM_THROTTLE(.2,"m_pos: "<<m_pos.transpose());
+  dx(1) = m_dX(1);
+
+  Eigen::Matrix6Xd J_b = this->chainState().jacobian();
+
   Eigen::FullPivLU<Eigen::MatrixXd> pinv_J ( J_b );
   pinv_J.setThreshold ( 1e-2 );
 
-  if(pinv_J.rank() < 6)
+  if(pinv_J.rank()<6)
   {
-     ROS_FATAL_STREAM("\n\n\n\n\n\n\n pinv.rank: "<< pinv_J.rank() <<" \n");
-     ROS_FATAL_STREAM("\n\n pinv: \n"<< pinv_J.matrixLU() <<" \n\n\n\n\n\n\n");
+    CNR_FATAL(this->logger(),"rank: "<<pinv_J.rank()<<"\nJacobian\n"<<J_b);
   }
-  rosdyn::VectorXd vel_sp = pinv_J.solve(dx);
-//  rosdyn::VectorXd vel_sp = J_b.inverse() * dx;
-  m_vel_fitler_sp.update(vel_sp);
-//  pos_sp = m_pos_sp  + m_vel_fitler_sp.getUpdatedValue()  * period.toSec();
-  pos_sp = m_pos_sp  + vel_sp  * period.toSec();
+//  Eigen::VectorXd sol(this->jointNames().size());
+//  Eigen::Vector3d trasl = T_b_t_.translation();
+//  trasl(0) = m_X(0);
+//  trasl(1) = m_X(1);
+//  T_b_t_.translation() = trasl;
+//  Eigen::VectorXd seed = this->chainState().q();
 
-  m_pos_sp  = pos_sp;
-  m_vel_sp  = vel_sp;
-  rosdyn::VectorXd q_error = m_pos_init - pos_sp;
-//  ROS_FATAL_STREAM_THROTTLE(.2,"pos_sp: "<<pos_sp.transpose());
-//  ROS_FATAL_STREAM_THROTTLE(.2,"m_pos_init: "<<m_pos_init.transpose());
-//  ROS_FATAL_STREAM_THROTTLE(.2,"m_pos: "<<m_pos.transpose());
-  
-  this->setCommandPosition( pos_sp );
-  this->setCommandVelocity( m_vel_fitler_sp.getUpdatedValue() );
+//  m_chain.computeLocalIk(sol, T_b_t_, seed);
+//  CNR_FATAL_THROTTLE(this->logger(),0.5,"-----ik "<<sol.transpose());
+//  rosdyn::VectorXd dq_sp(this->jointNames().size());
+//  q_sp = sol;
+//  dq_sp = (q_sp - m_q_sp)/ period.toSec();
 
+  rosdyn::VectorXd dq_sp = pinv_J.solve(dx);
+  q_sp = m_q_sp  + dq_sp  * period.toSec();
 
-  rosdyn::VectorXd curr_q = this->getPosition();
-//  ROS_FATAL_STREAM_THROTTLE(.2,"curr_q: "<<curr_q.transpose());
+  m_q_sp  = q_sp;
+  m_dq_sp  = dq_sp;
+  this->setCommandPosition( q_sp );
+  this->setCommandVelocity( dq_sp);
 
-  Eigen::Vector3d x_curr = m_chain.getTransformation(curr_q).translation();
-  Eigen::Vector3d init = m_chain.getTransformation(m_pos_init).translation();
-  Eigen::Vector3d rrr = init - x_curr;
-  Eigen::Vector3d x_sp = m_chain.getTransformation(pos_sp).translation();
-
-//    ROS_FATAL_STREAM_THROTTLE(.2,"x_sp: "<<x_sp.transpose());
-
-    if(x_sp(0)>0.8)
-    {
-        ROS_FATAL_STREAM("\n\n\n\n\n\n\n\nx_sp: "<<x_sp.transpose());
-        ROS_FATAL_STREAM("pos_sp: "<<pos_sp.transpose());
-        ROS_FATAL_STREAM("vel_sp: "<<vel_sp.transpose()<<"\n\n\n\n");
-    }
-  //  ROS_FATAL_STREAM_THROTTLE(.2,"x_curr: "<<x_curr.transpose());
-//  ROS_FATAL_STREAM_THROTTLE(.2,"init: "<<init.transpose());
-//  ROS_FATAL_STREAM_THROTTLE(.2,"rr: "<<rrr.transpose());
-  ROS_FATAL_STREAM_THROTTLE(.2,"X: "<<m_X.transpose());
-//  ROS_FATAL_STREAM_THROTTLE(.2,"X ref: "<<m_X_ref.transpose());
+//------------------------------------------
+  Eigen::Vector3d x_curr = this->chainState().toolPose().translation();
+  Eigen::Vector3d sp = m_chain.getTransformation(q_sp).translation();
 
   geometry_msgs::PoseStamped ref_pos;
   geometry_msgs::PoseStamped cur_pos;
-  geometry_msgs::PoseStamped err_pos;
-  geometry_msgs::PoseStamped ee_pos;
+  geometry_msgs::PoseStamped sp_pos;
+  geometry_msgs::PoseStamped traj_pos;
+
+  ros::Time stamp = ros::Time::now();
 
   ref_pos.header.frame_id = "ur5_base_link";
-  ref_pos.header.stamp = ros::Time::now();
+  ref_pos.header.stamp = stamp;
   ref_pos.pose.position.x = m_X(0);
   ref_pos.pose.position.y = m_X(1);
 
   cur_pos.header.frame_id = "ur5_base_link";
-  cur_pos.header.stamp = ros::Time::now();
+  cur_pos.header.stamp = stamp;
   cur_pos.pose.position.x = x_curr(0);
   cur_pos.pose.position.y = x_curr(1);
 
-  err_pos.header.frame_id = "ur5_base_link";
-  err_pos.header.stamp = ros::Time::now();
-  err_pos.pose.position.x = m_X(0)-x_curr(0);
-  err_pos.pose.position.y = m_X(1)-x_curr(1);
+  sp_pos.header.frame_id = "ur5_base_link";
+  sp_pos.header.stamp = stamp;
+  sp_pos.pose.position.x = sp(0);
+  sp_pos.pose.position.y = sp(1);
 
-  Eigen::Affine3d ee_eig = m_chain.getTransformation(curr_q);
+  traj_pos.header.frame_id = "ur5_base_link";
+  traj_pos.header.stamp = stamp;
+  traj_pos.pose.position.x = m_X_ref(0);
+  traj_pos.pose.position.y = m_X_ref(1);
 
-  ee_pos.header.frame_id = "ur5_base_link";
-  ee_pos.header.stamp = ros::Time::now();
-  ee_pos.pose.position.x = ee_eig.translation()(0);
-  ee_pos.pose.position.y = ee_eig.translation()(1);
-  ee_pos.pose.position.z = ee_eig.translation()(2);
+  std_msgs::Float32 alpha_msg;
+  alpha_msg.data = alpha;
 
-  this->publish(cart_pos_ref_pub,ref_pos);
-  this->publish(cart_pos_cur_pub,cur_pos);
-  this->publish(cart_pos_err_pub,err_pos);
-  this->publish(ee_pos_pub,ee_pos);
+  std_msgs::Float32 hw_msg;
+  hw_msg.data = norm_wrench;
+
+  std_msgs::Float32 D_msg;
+  D_msg.data = var_D;
+
+  std_msgs::Float32 K_msg;
+  K_msg.data = var_K;
+
+  sensor_msgs::JointState joint_sp_msg;
+
+  std::vector<double> jvec;
+  for (int i=0; i<this->jointNames().size();i++)
+  {
+      jvec.push_back( q_sp(i) );
+  }
+
+  joint_sp_msg.name = this->jointNames();
+  joint_sp_msg.position = jvec;
+  joint_sp_msg.header.stamp = stamp;
+
+  geometry_msgs::WrenchStamped hu_msg;
+  geometry_msgs::WrenchStamped ru_msg;
+
+  hu_msg.header.stamp = stamp;
+  ru_msg.header.stamp = stamp;
+
+  hu_msg.wrench.force.x = uh(0);
+  hu_msg.wrench.force.y = uh(1);
+
+  ru_msg.wrench.force.x = ur(0);
+  ru_msg.wrench.force.y = ur(1);
+
+  this->publish(cart_pos_ref_pub ,ref_pos);
+  this->publish(cart_pos_cur_pub ,cur_pos);
+  this->publish(cart_pos_sp_pub  ,sp_pos);
+  this->publish(cart_pos_traj_pub,traj_pos);
+  this->publish(joint_sp_pub     ,joint_sp_msg);
+  this->publish(alpha_pub        ,alpha_msg);
+  this->publish(human_wrench_pub ,hw_msg);
+  this->publish(human_u_pub      ,hu_msg);
+  this->publish(robot_u_pub      ,ru_msg);
+  this->publish(D_pub            ,D_msg);
+  this->publish(K_pub            ,K_msg);
 
 
 
+//  auto end = std::chrono::steady_clock::now();
+//  CNR_FATAL_THROTTLE(this->logger(),0.1,"time: "<<std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count());
 
   CNR_RETURN_TRUE_THROTTLE_DEFAULT(this->logger());
 
@@ -482,10 +506,10 @@ void GtTrajDeformation::callback(const geometry_msgs::WrenchStampedConstPtr& msg
     m_w_b_0 ( 3 ) = msg->wrench.torque.x;
     m_w_b_0 ( 4 ) = msg->wrench.torque.y;
     m_w_b_0 ( 5 ) = msg->wrench.torque.z;
-    
+
     m_w_b_init = true;
   }
-  
+
   Eigen::Vector6d wrench_s;
   wrench_s( 0 ) = msg->wrench.force.x  - m_w_b_0 ( 0 );
   wrench_s( 1 ) = msg->wrench.force.y  - m_w_b_0 ( 1 );
@@ -493,15 +517,15 @@ void GtTrajDeformation::callback(const geometry_msgs::WrenchStampedConstPtr& msg
   wrench_s( 3 ) = msg->wrench.torque.x - m_w_b_0 ( 3 );
   wrench_s( 4 ) = msg->wrench.torque.y - m_w_b_0 ( 4 );
   wrench_s( 5 ) = msg->wrench.torque.z - m_w_b_0 ( 5 );
-  
+
   Eigen::Affine3d T_bs = m_chain_bs->getTransformation ( this->getPosition() );
   Eigen::Affine3d T_bt = m_chain    .getTransformation ( this->getPosition() );
   Eigen::Affine3d T_ts = T_bt.inverse() * T_bs;
   Eigen::Vector6d w_t = rosdyn::spatialDualTranformation ( wrench_s , T_ts );
   Eigen::Vector6d wrench;
   wrench = rosdyn::spatialRotation ( w_t, T_bt.linear() );
-  
-  for ( unsigned int idx=0; idx<6; idx++ ) 
+
+  for ( unsigned int idx=0; idx<6; idx++ )
   {
     if ( ( wrench ( idx ) >m_wrench_deadband ( idx ) ) )
     {
@@ -516,11 +540,11 @@ void GtTrajDeformation::callback(const geometry_msgs::WrenchStampedConstPtr& msg
         m_w_b ( idx ) =0;
     }
   }
-  
-  
-  
+
+
+
   geometry_msgs::WrenchStamped tool_w;
-  
+
   tool_w.header.frame_id = "robotiq_ft_frame_id";
   tool_w.header.stamp = ros::Time::now();
   tool_w.wrench.force.x  = wrench_s( 0 );
@@ -529,9 +553,9 @@ void GtTrajDeformation::callback(const geometry_msgs::WrenchStampedConstPtr& msg
   tool_w.wrench.torque.x = wrench_s( 3 );
   tool_w.wrench.torque.y = wrench_s( 4 );
   tool_w.wrench.torque.z = wrench_s( 5 );
-  
+
   geometry_msgs::WrenchStamped base_w;
-  
+
   base_w.header.frame_id = "ur5_base_link";
   base_w.header.stamp = ros::Time::now();
   base_w.wrench.force.x  = m_w_b( 0 );
@@ -540,13 +564,13 @@ void GtTrajDeformation::callback(const geometry_msgs::WrenchStampedConstPtr& msg
   base_w.wrench.torque.x = m_w_b( 3 );
   base_w.wrench.torque.y = m_w_b( 4 );
   base_w.wrench.torque.z = m_w_b( 5 );
-  
-  
+
+
   this->publish(wrench_base_pub,base_w);
   this->publish(wrench_tool_pub,tool_w);
-  
-  
-  
+
+
+
 }
 
 
@@ -555,10 +579,10 @@ double GtTrajDeformation::sigma(double x)
   return m_max_y -(m_height/(1+exp(-m_width*(x-m_half_x))));
 }
 
-bool GtTrajDeformation::solveRiccatiArimotoPotter(const Eigen::MatrixXd &A,
+bool GtTrajDeformation::solveRiccati(const Eigen::MatrixXd &A,
                                const Eigen::MatrixXd &B,
                                const Eigen::MatrixXd &Q,
-                               const Eigen::MatrixXd &R, Eigen::MatrixXd &P) 
+                               const Eigen::MatrixXd &R, Eigen::MatrixXd &P)
 {
 
   const uint dim_x = A.rows();
