@@ -1,5 +1,4 @@
-#ifndef cnr_joint_teleop_controller__20188101642
-#define cnr_joint_teleop_controller__20188101642
+#pragma once
 
 #include <cmath>
 #include <Eigen/Core>
@@ -10,6 +9,8 @@
 #include <cnr_controller_interface/cnr_joint_command_controller_interface.h>
 #include <cnr_hardware_interface/posveleff_command_interface.h>
 #include <cnr_hardware_interface/veleff_command_interface.h>
+#include <control_msgs/GripperCommandAction.h>
+#include <actionlib/client/simple_action_client.h>
 
 
 namespace ect = eigen_control_toolbox;
@@ -41,6 +42,8 @@ protected:
   std::mutex m_mtx;
 
   ect::FilteredVectorXd m_vel_fitler_sp;
+  ect::FilteredVectorXd m_wrench_fitler;
+
   rosdyn::VectorXd m_dq_sp;
   rosdyn::VectorXd m_q_sp;
   rosdyn::VectorXd m_vel_sp_last;
@@ -64,15 +67,18 @@ protected:
   Eigen::Matrix<double, 4, 4> m_Qr;
   Eigen::Matrix<double, 4, 4> m_Rr;
 
-  bool   m_w_b_init;
-  Eigen::Vector6d   m_w_b;
-  Eigen::Vector6d   m_w_b_0;
-  Eigen::Vector6d   m_wrench_deadband;
+  bool m_w_b_init;
+  bool m_use_filtered_wrench;
+  Eigen::Vector6d m_w_b_filt;
+  Eigen::Vector6d m_w_b;
+  Eigen::Vector6d m_w_b_0;
+  Eigen::Vector6d m_wrench_deadband;
 
   Eigen::Affine3d T_b_t_;
 
   rosdyn::ChainPtr m_chain_bs;
 
+  size_t filtered_wrench_base_pub;
   size_t wrench_base_pub;
   size_t wrench_tool_pub;
 
@@ -87,6 +93,7 @@ protected:
   size_t joint_sp_pub;
   size_t D_pub;
   size_t K_pub;
+  size_t activate_gripper_pub;
 
   double m_init_time;
   double m_rho;
@@ -100,6 +107,10 @@ protected:
   double m_damping;
   double m_mass;
 
+  boost::shared_ptr<actionlib::SimpleActionClient<control_msgs::GripperCommandAction>> gripper_action_;
+
+  ros::ServiceClient m_gripper_srv;
+
   double sigma(double x);
   bool solveRiccati(const Eigen::MatrixXd &A,
                                const Eigen::MatrixXd &B,
@@ -110,9 +121,3 @@ protected:
 
 }
 }
-
-// #include <cnr_joint_teleop_controller/internal/cnr_joint_teleop_controller_impl.h>
-
-
-
-#endif

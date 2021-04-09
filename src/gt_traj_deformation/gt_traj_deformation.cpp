@@ -8,7 +8,7 @@
 #include <std_msgs/Float32.h>
 #include <sensor_msgs/JointState.h>
 #include <rosdyn_core/primitives.h>
-
+#include <std_srvs/SetBool.h>
 
 PLUGINLIB_EXPORT_CLASS(cnr::control::GtTrajDeformation  , controller_interface::ControllerBase)
 
@@ -113,34 +113,41 @@ bool GtTrajDeformation::doInit()
   this->template add_subscriber<geometry_msgs::WrenchStamped>(
         external_wrench_topic,5,boost::bind(&GtTrajDeformation::callback,this,_1), false);
 
-  wrench_base_pub = this->template add_publisher<geometry_msgs::WrenchStamped>("wrench_base",5);
-  wrench_tool_pub = this->template add_publisher<geometry_msgs::WrenchStamped>("wrench_tool",5);
+  filtered_wrench_base_pub = this->template add_publisher<geometry_msgs::WrenchStamped>("filtered_wrench_base",5);
+  wrench_base_pub          = this->template add_publisher<geometry_msgs::WrenchStamped>("wrench_base",5);
+  wrench_tool_pub          = this->template add_publisher<geometry_msgs::WrenchStamped>("wrench_tool",5);
 
-  cart_pos_ref_pub   = this->template add_publisher<geometry_msgs::PoseStamped>("pose_ref"    ,5);
-  cart_pos_cur_pub   = this->template add_publisher<geometry_msgs::PoseStamped>("pose_cur"    ,5);
-  cart_pos_sp_pub    = this->template add_publisher<geometry_msgs::PoseStamped>("pose_sp"     ,5);
-  cart_pos_traj_pub  = this->template add_publisher<geometry_msgs::PoseStamped>("pose_traj"   ,5);
-  joint_sp_pub       = this->template add_publisher<sensor_msgs::JointState>   ("joint_sp"    ,5);
-  alpha_pub          = this->template add_publisher<std_msgs::Float32>         ("alpha"       ,5);
-  human_wrench_pub   = this->template add_publisher<std_msgs::Float32>         ("human_wrench",5);
-  D_pub              = this->template add_publisher<std_msgs::Float32>         ("var_D"       ,5);
-  K_pub              = this->template add_publisher<std_msgs::Float32>         ("var_K"       ,5);
+  cart_pos_ref_pub  = this->template add_publisher<geometry_msgs::PoseStamped>("pose_ref"    ,5);
+  cart_pos_cur_pub  = this->template add_publisher<geometry_msgs::PoseStamped>("pose_cur"    ,5);
+  cart_pos_sp_pub   = this->template add_publisher<geometry_msgs::PoseStamped>("pose_sp"     ,5);
+  cart_pos_traj_pub = this->template add_publisher<geometry_msgs::PoseStamped>("pose_traj"   ,5);
+  joint_sp_pub      = this->template add_publisher<sensor_msgs::JointState>   ("joint_sp"    ,5);
+  alpha_pub         = this->template add_publisher<std_msgs::Float32>         ("alpha"       ,5);
+  human_wrench_pub  = this->template add_publisher<std_msgs::Float32>         ("human_wrench",5);
+  D_pub             = this->template add_publisher<std_msgs::Float32>         ("var_D"       ,5);
+  K_pub             = this->template add_publisher<std_msgs::Float32>         ("var_K"       ,5);
+
+  std::string gripper_name;
+  GET_AND_DEFAULT(this->getControllerNh(),"gripper_name", gripper_name, "gripper");
+  gripper_name += "/goal";
+  activate_gripper_pub = this->template add_publisher<control_msgs::GripperCommandActionGoal>(gripper_name,5);
 
   human_u_pub = this->template add_publisher<geometry_msgs::WrenchStamped>("human_u",5);
   robot_u_pub = this->template add_publisher<geometry_msgs::WrenchStamped>("robot_u",5);
 
   this->setPriority(this->QD_PRIORITY);
-
-  ect::FilteredVectorXd::Value dead_band;
-  ect::FilteredVectorXd::Value saturation;
-  ect::FilteredVectorXd::Value init_value;
-
-  dead_band = 0.0 * m_chain.getDQMax();
-  saturation = m_chain.getDQMax();
-  init_value = dead_band;
-  if(!m_vel_fitler_sp.activateFilter ( dead_band, saturation, (10.0 / 2.0 / M_PI), this->m_sampling_period, init_value ))
   {
-    CNR_RETURN_FALSE(this->logger());
+      ect::FilteredVectorXd::Value dead_band;
+      ect::FilteredVectorXd::Value saturation;
+      ect::FilteredVectorXd::Value init_value;
+
+      dead_band = 0.0 * m_chain.getDQMax();
+      saturation = m_chain.getDQMax();
+      init_value = dead_band;
+      if(!m_vel_fitler_sp.activateFilter ( dead_band, saturation, (10.0 / 2.0 / M_PI), this->m_sampling_period, init_value ))
+      {
+        CNR_RETURN_FALSE(this->logger());
+      }
   }
   m_dq_sp = m_vel_fitler_sp.getUpdatedValue();
   m_q_sp = this->getPosition();
@@ -178,6 +185,30 @@ bool GtTrajDeformation::doInit()
   std::vector<double> wrench_deadband(6,0);
   GET_PARAM_VECTOR_AND_RETURN ( this->getControllerNh(), "wrench_deadband", wrench_deadband, 6, "<=" );
   m_wrench_deadband   = Eigen::Vector6d( wrench_deadband.data() );
+
+  GET_AND_DEFAULT(this->getControllerNh(),"use_filtered_wrench",m_use_filtered_wrench,false);
+
+  {
+      double omega;
+      GET_AND_DEFAULT(this->getControllerNh(),"omega_wrench",omega,10.0);
+      ect::FilteredVectorXd::Value dead_band;
+      ect::FilteredVectorXd::Value saturation;
+      ect::FilteredVectorXd::Value init_value;
+
+      dead_band  = m_wrench_deadband;
+      saturation = 10.0 * dead_band;
+      init_value = 0.0 * dead_band;
+      if(!m_wrench_fitler.activateFilter ( dead_band, saturation, (omega / (2 * M_PI)), this->m_sampling_period, init_value ))
+      {
+        CNR_RETURN_FALSE(this->logger());
+      }
+  }
+  m_w_b_filt = m_wrench_fitler.getUpdatedValue();
+
+
+
+
+
 
   std::vector<double> M_r(6,0), D_r(6,0), K_r(6,0);
   GET_PARAM_VECTOR_AND_RETURN ( this->getControllerNh(), "M_r", M_r, 6 , "<=" );
@@ -256,6 +287,10 @@ bool GtTrajDeformation::doInit()
   GET_AND_RETURN(this->getControllerNh(), "sigmoid_height", m_height);
   GET_AND_RETURN(this->getControllerNh(), "sigmoid_max_y" , m_max_y );
 
+//  gripper_action_.reset(new actionlib::SimpleActionClient<control_msgs::GripperCommandAction>(gripper_name, true));
+//  CNR_INFO(this->logger(),"Waiting for "<<gripper_name<<" action server to start.");
+//  gripper_action_->waitForServer();
+
 
   CNR_RETURN_TRUE(this->logger());
 }
@@ -317,7 +352,11 @@ bool GtTrajDeformation::doUpdate(const ros::Time& /*time*/, const ros::Duration&
   ROS_DEBUG_STREAM_THROTTLE(.2,"ext wrench: "<<m_w_b.transpose());
 
   Eigen::Vector2d human_wrench;
-  human_wrench << m_w_b(0), m_w_b(1);
+  if (m_use_filtered_wrench)
+    human_wrench << m_w_b_filt(0), m_w_b_filt(1);
+  else
+    human_wrench << m_w_b(0), m_w_b(1);
+
   double norm_wrench = human_wrench.norm();
 
   double alpha = sigma(norm_wrench);
@@ -364,8 +403,8 @@ bool GtTrajDeformation::doUpdate(const ros::Time& /*time*/, const ros::Duration&
 
   Eigen::VectorXd uff = kk*pinS*g*(m_X_ref - m_X_zero);
 
-//  Eigen::Vector2d u_shr;
-//  u_shr << uff.segment(0,2)+uff.segment(2,2);
+  Eigen::Vector2d u_shr;
+  u_shr << uff.segment(0,2)+uff.segment(2,2);
 
 //  Eigen::Vector2d uh;
 //  uh(0) = ufb(0) + (1 - alpha)*u_shr(0);
@@ -637,8 +676,6 @@ bool GtTrajDeformation::doUpdate(const ros::Time& /*time*/, const ros::Duration&
       }
     }
 
-
-
     geometry_msgs::WrenchStamped tool_w;
 
     tool_w.header.frame_id = "robotiq_ft_frame_id";
@@ -661,11 +698,39 @@ bool GtTrajDeformation::doUpdate(const ros::Time& /*time*/, const ros::Duration&
     base_w.wrench.torque.y = m_w_b( 4 );
     base_w.wrench.torque.z = m_w_b( 5 );
 
+    geometry_msgs::WrenchStamped filter_base_w;
+
+    m_wrench_fitler.update(wrench);
+    m_w_b_filt = m_wrench_fitler.getUpdatedValue();
+
+    filter_base_w.header.frame_id = "ur5_base_link";
+    filter_base_w.header.stamp = ros::Time::now();
+    filter_base_w.wrench.force.x  = m_w_b_filt( 0 );
+    filter_base_w.wrench.force.y  = m_w_b_filt( 1 );
+    filter_base_w.wrench.force.z  = m_w_b_filt( 2 );
+    filter_base_w.wrench.torque.x = m_w_b_filt( 3 );
+    filter_base_w.wrench.torque.y = m_w_b_filt( 4 );
+    filter_base_w.wrench.torque.z = m_w_b_filt( 5 );
+
 
     this->publish(wrench_base_pub,base_w);
+    this->publish(filtered_wrench_base_pub,filter_base_w);
     this->publish(wrench_tool_pub,tool_w);
 
-
+    if (wrench_s(5)>1.5)
+    {
+        control_msgs::GripperCommandActionGoal goal;
+        goal.goal.command.position = -0.01;
+        goal.goal.command.max_effort = 30.0;
+        this->publish(activate_gripper_pub,goal);
+    }
+    else if (wrench_s(5)<-1.5)
+    {
+        control_msgs::GripperCommandActionGoal goal;
+        goal.goal.command.position = 0.08;
+        goal.goal.command.max_effort = 30.0;
+        this->publish(activate_gripper_pub,goal);
+    }
 
   }
 
