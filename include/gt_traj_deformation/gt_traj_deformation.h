@@ -4,6 +4,8 @@
 #include <Eigen/Core>
 #include <ros/time.h>
 #include <geometry_msgs/WrenchStamped.h>
+#include <geometry_msgs/PoseStamped.h>
+#include <sensor_msgs/JointState.h>
 
 #include <state_space_filters/filtered_values.h>
 #include <cnr_controller_interface/cnr_joint_command_controller_interface.h>
@@ -24,18 +26,19 @@ namespace control
 /**
  * @brief The GtTrajDeformation class
  */
-class GtTrajDeformation:
-    public cnr::control::JointCommandController<
+class GtTrajDeformation: public cnr::control::JointCommandController<
 //        hardware_interface::PosVelEffJointHandle, hardware_interface::PosVelEffJointInterface>
         hardware_interface::JointHandle, hardware_interface::VelocityJointInterface>
 {
 public:
   GtTrajDeformation();
   bool doInit();
-  bool doUpdate(const ros::Time& time, const ros::Duration& period);
+  bool doUpdate  (const ros::Time& time, const ros::Duration& period);
   bool doStarting(const ros::Time& time);
   bool doStopping(const ros::Time& time);
-  void callback(const geometry_msgs::WrenchStampedConstPtr& msg );
+
+  void callback         (const geometry_msgs::WrenchStampedConstPtr& msg );
+  void setTargetCallback(const geometry_msgs::PoseStampedConstPtr&   msg );
 
 protected:
 
@@ -49,23 +52,26 @@ protected:
   rosdyn::VectorXd m_vel_sp_last;
   rosdyn::VectorXd m_dist_to_pos_sp;
 
-  Eigen::VectorXd   m_X_zero;
-  Eigen::VectorXd   m_X_ref;
-  Eigen::VectorXd   m_X;
-  Eigen::VectorXd   m_dX;
+  rosdyn::VectorXd   m_X_zero;
+  rosdyn::VectorXd   m_X_ref;
+  rosdyn::VectorXd   m_X_sp;
+  rosdyn::VectorXd   m_X;
+  rosdyn::VectorXd   m_dX;
 
-  Eigen::Matrix<double, 4, 4> m_A;
-  Eigen::Matrix<double, 4, 2> m_Bh;
-  Eigen::Matrix<double, 4, 2> m_Br;
+  Eigen::Matrix<double, 6, 6> m_A;
+  Eigen::Matrix<double, 6, 3> m_Bh;
+  Eigen::Matrix<double, 6, 3> m_Br;
   Eigen::MatrixXd m_B;
   Eigen::MatrixXd m_C;
   Eigen::MatrixXd m_D;
   Eigen::MatrixXd m_S;
 
-  Eigen::Matrix<double, 4, 4> m_Q_hat;
-  Eigen::Matrix<double, 4, 4> m_R_hat;
-  Eigen::Matrix<double, 4, 4> m_Qr;
-  Eigen::Matrix<double, 4, 4> m_Rr;
+  Eigen::Matrix<double, 6, 6> m_Q_hat;
+  Eigen::Matrix<double, 6, 6> m_R_hat;
+  Eigen::Matrix<double, 6, 6> m_Qr;
+  Eigen::Matrix<double, 6, 6> m_Rr;
+
+  bool m_target_ok;
 
   bool m_w_b_init;
   bool m_use_filtered_wrench;
@@ -77,6 +83,7 @@ protected:
   Eigen::Affine3d T_b_t_;
 
   rosdyn::ChainPtr m_chain_bs;
+  rosdyn::ChainPtr m_chain_bt;
 
   size_t filtered_wrench_base_pub;
   size_t wrench_base_pub;
@@ -84,7 +91,6 @@ protected:
 
   size_t cart_pos_ref_pub;
   size_t cart_pos_cur_pub;
-  size_t cart_pos_sp_pub;
   size_t cart_pos_traj_pub;
   size_t alpha_pub;
   size_t human_wrench_pub;
@@ -93,9 +99,10 @@ protected:
   size_t joint_sp_pub;
   size_t D_pub;
   size_t K_pub;
-  size_t activate_gripper_pub;
+  size_t path_pub;
 
   double m_init_time;
+  double m_scale_time;
   double m_rho;
   double m_omega;
   double m_width ;
@@ -103,15 +110,24 @@ protected:
   double m_height;
   double m_max_y ;
 
+
+  double exponential_;
+  double min_val_;
+
   double m_stiffness;
   double m_damping;
   double m_mass;
 
-  boost::shared_ptr<actionlib::SimpleActionClient<control_msgs::GripperCommandAction>> gripper_action_;
+  Eigen::Vector6d M_;
+  Eigen::Vector6d D_;
+  Eigen::Vector6d K_;
 
-  ros::ServiceClient m_gripper_srv;
+  std::vector<geometry_msgs::PoseStamped> traj_path_;
+
+  std::shared_ptr<ros_helper::SubscriptionNotifier<geometry_msgs::PoseStamped>> m_target_sub;
 
   double sigma(double x);
+  double sigmaOne(double x);
   bool solveRiccati(const Eigen::MatrixXd &A,
                                const Eigen::MatrixXd &B,
                                const Eigen::MatrixXd &Q,
