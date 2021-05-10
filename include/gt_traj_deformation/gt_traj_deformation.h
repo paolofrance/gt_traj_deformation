@@ -101,15 +101,10 @@ protected:
   size_t K_pub;
   size_t path_pub;
 
-  double m_init_time;
-  double m_scale_time;
-  double m_rho;
-  double m_omega;
   double m_width ;
   double m_half_x;
   double m_height;
   double m_max_y ;
-
 
   double exponential_;
   double min_val_;

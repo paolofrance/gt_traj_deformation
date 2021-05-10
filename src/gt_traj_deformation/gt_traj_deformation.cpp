@@ -297,9 +297,6 @@ bool GtTrajDeformation::doInit()
   ROS_FATAL_STREAM("\n"<<m_S);
   m_w_b_init = false;
 
-  GET_AND_RETURN(this->getControllerNh(), "rho", m_rho);
-  GET_AND_RETURN(this->getControllerNh(), "omega", m_omega);
-
   GET_AND_RETURN(this->getControllerNh(), "sigmoid_width" , m_width );
   GET_AND_RETURN(this->getControllerNh(), "sigmoid_half_x", m_half_x);
   GET_AND_RETURN(this->getControllerNh(), "sigmoid_height", m_height);
@@ -335,8 +332,6 @@ bool GtTrajDeformation::doStarting(const ros::Time& /*time*/)
   m_X_zero = m_X;
   m_X_ref = m_X;
   m_dX.setZero();
-  m_init_time = 0;
-  m_scale_time = 0;
 
   m_X_sp(0) = 0;
   m_X_sp(1) = 0;
@@ -468,15 +463,6 @@ bool GtTrajDeformation::doUpdate(const ros::Time& /*time*/, const ros::Duration&
   solveRiccati(A, B, Q, R, P);
 
   Eigen::MatrixXd K = R.inverse()*B.transpose()*P;
-
-//  m_scale_time += period.toSec()*alpha_traj;
-  m_scale_time += period.toSec();
-
-//  m_X_ref(0) = m_X_zero(0) - m_rho*cos(m_omega*m_scale_time);
-////  m_X_ref(0) = m_X_zero(0) + m_rho*sin(m_omega*m_scale_time);
-//  m_X_ref(1) = m_X_zero(1) + m_rho*sin(m_omega*m_scale_time);
-//  m_X_ref(2) = m_X_zero(2);
-
 
   m_X_ref(0) = m_X_zero(0) + m_X_sp(0);
   m_X_ref(1) = m_X_zero(1) + m_X_sp(1);
