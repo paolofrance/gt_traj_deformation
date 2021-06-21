@@ -5,6 +5,7 @@
 #include <ros/time.h>
 #include <geometry_msgs/WrenchStamped.h>
 #include <geometry_msgs/PoseStamped.h>
+#include <geometry_msgs/TwistStamped.h>
 #include <sensor_msgs/JointState.h>
 
 #include <state_space_filters/filtered_values.h>
@@ -13,6 +14,8 @@
 #include <cnr_hardware_interface/veleff_command_interface.h>
 #include <control_msgs/GripperCommandAction.h>
 #include <actionlib/client/simple_action_client.h>
+
+//#include <cnr_cartesian_velocity_controller/cnr_cartesian_velocity_controller.h>
 
 
 namespace ect = eigen_control_toolbox;
@@ -27,20 +30,24 @@ namespace control
  * @brief The GtTrajDeformation class
  */
 class GtTrajDeformation: public cnr::control::JointCommandController<
-//        hardware_interface::PosVelEffJointHandle, hardware_interface::PosVelEffJointInterface>
         hardware_interface::JointHandle, hardware_interface::VelocityJointInterface>
 {
 public:
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
   GtTrajDeformation();
   bool doInit();
   bool doUpdate  (const ros::Time& time, const ros::Duration& period);
   bool doStarting(const ros::Time& time);
   bool doStopping(const ros::Time& time);
 
-  void callback         (const geometry_msgs::WrenchStampedConstPtr& msg );
-  void setTargetCallback(const geometry_msgs::PoseStampedConstPtr&   msg );
+  void callback              (const geometry_msgs::WrenchStampedConstPtr&  msg );
+  void setTargetPoseCallback (const geometry_msgs::PoseStampedConstPtr&    msg );
+  void setTargetTwistCallback(const geometry_msgs::TwistStampedConstPtr&   msg );
 
 protected:
+
+//  cnr::control::CartesianVelocityToJointVelocityController vc_;
 
   std::mutex m_mtx;
 
@@ -52,11 +59,12 @@ protected:
   rosdyn::VectorXd m_vel_sp_last;
   rosdyn::VectorXd m_dist_to_pos_sp;
 
-  rosdyn::VectorXd   m_X_zero;
-  rosdyn::VectorXd   m_X_ref;
-  rosdyn::VectorXd   m_X_sp;
-  rosdyn::VectorXd   m_X;
-  rosdyn::VectorXd   m_dX;
+  Eigen::Vector6d m_X_zero;
+  Eigen::Vector6d m_X_ref;
+  Eigen::Vector6d m_X_sp;
+  Eigen::Vector6d m_X;
+  Eigen::Vector6d m_X_prev;
+  Eigen::Vector6d m_dX;
 
   Eigen::Matrix<double, 6, 6> m_A;
   Eigen::Matrix<double, 6, 3> m_Bh;
@@ -72,6 +80,9 @@ protected:
   Eigen::Matrix<double, 6, 6> m_Rr;
 
   bool m_target_ok;
+  bool init_X_;
+
+  int count_update_;
 
   bool m_w_b_init;
   bool m_use_filtered_wrench;
@@ -100,6 +111,9 @@ protected:
   size_t D_pub;
   size_t K_pub;
   size_t path_pub;
+  size_t activate_gripper_pub;
+
+  size_t target_twist_pub_;
 
   double m_width ;
   double m_half_x;
@@ -127,6 +141,126 @@ protected:
                                const Eigen::MatrixXd &B,
                                const Eigen::MatrixXd &Q,
                                const Eigen::MatrixXd &R, Eigen::MatrixXd &P) ;
+
+//  bool prepareInit(hardware_interface::VelocityJointInterface* hw,
+//                   const std::string& hw_name, const std::string& ctrl_name,
+//                   ros::NodeHandle& root_nh, ros::NodeHandle& ctrl_nh) override
+//  {
+//    this->cnr::control::JointCommandController<
+//        hardware_interface::JointHandle, hardware_interface::VelocityJointInterface>::
+//          prepareInit(hw, hw_name, ctrl_name, root_nh, ctrl_nh);
+
+//    CNR_TRACE_START(m_logger);
+//    if(!vc_.prepareInit(m_hw, hw_name, "vc",
+//                        this->getRootNh(), this->getControllerNh() ))
+//    {
+//      CNR_RETURN_FALSE(m_logger);
+//    }
+//    CNR_RETURN_TRUE(m_logger);
+//  }
+
+//  bool enterInit() override
+//  {
+//    CNR_TRACE_START(m_logger);
+//    if(!cnr::control::JointCommandController<
+//            hardware_interface::JointHandle, hardware_interface::VelocityJointInterface>::enterInit())
+//    {
+//      CNR_RETURN_FALSE(m_logger);
+//    }
+//    if(!vc_.enterInit())
+//    {
+//      CNR_RETURN_FALSE(m_logger);
+//    }
+//    CNR_RETURN_TRUE(m_logger);
+//  }
+//  bool enterStarting() override
+//  {
+//    CNR_TRACE_START(m_logger);
+//    if(!cnr::control::JointCommandController<
+//            hardware_interface::JointHandle, hardware_interface::VelocityJointInterface>::enterStarting())
+//    {
+//      CNR_RETURN_FALSE(m_logger);
+//    }
+//    if(!vc_.enterStarting())
+//    {
+//      CNR_RETURN_FALSE(m_logger);
+//    }
+//    CNR_RETURN_TRUE(m_logger);
+//  }
+//  bool exitStarting() override
+//  {
+//    CNR_TRACE_START(m_logger);
+//    if(!cnr::control::JointCommandController<
+//            hardware_interface::JointHandle, hardware_interface::VelocityJointInterface>::exitStarting())
+//    {
+//      CNR_RETURN_FALSE(m_logger);
+//    }
+//    if(!vc_.exitStarting())
+//    {
+//      CNR_RETURN_FALSE(m_logger);
+//    }
+//    CNR_RETURN_TRUE(m_logger);
+//  }
+
+//  bool enterUpdate() override
+//  {
+//    CNR_TRACE_START(m_logger);
+//    if(!cnr::control::JointCommandController<
+//            hardware_interface::JointHandle, hardware_interface::VelocityJointInterface>::enterUpdate())
+//    {
+//      CNR_RETURN_FALSE(m_logger);
+//    }
+//    if(!vc_.enterUpdate())
+//    {
+//      CNR_RETURN_FALSE(m_logger);
+//    }
+//    CNR_RETURN_TRUE(m_logger);
+//  }
+//  bool exitUpdate() override
+//  {
+//    CNR_TRACE_START(m_logger);
+//    if(!cnr::control::JointCommandController<
+//            hardware_interface::JointHandle, hardware_interface::VelocityJointInterface>::exitUpdate())
+//    {
+//      CNR_RETURN_FALSE(m_logger);
+//    }
+//    if(!vc_.exitUpdate())
+//    {
+//      CNR_RETURN_FALSE(m_logger);
+//    }
+//    CNR_RETURN_TRUE(m_logger);
+//  }
+
+//  bool enterStopping() override
+//  {
+//    CNR_TRACE_START(m_logger);
+//    if(!cnr::control::JointCommandController<
+//            hardware_interface::JointHandle, hardware_interface::VelocityJointInterface>::enterStopping())
+//    {
+//      CNR_RETURN_FALSE(m_logger);
+//    }
+//    if(!vc_.enterStopping())
+//    {
+//      CNR_RETURN_FALSE(m_logger);
+//    }
+//    CNR_RETURN_TRUE(m_logger);
+//  }
+
+//  bool exitStopping() override
+//  {
+//    CNR_TRACE_START(m_logger);
+//    if(!cnr::control::JointCommandController<
+//            hardware_interface::JointHandle, hardware_interface::VelocityJointInterface>::exitStopping())
+//    {
+//      CNR_RETURN_FALSE(m_logger);
+//    }
+//    if(!vc_.exitStopping())
+//    {
+//      CNR_RETURN_FALSE(m_logger);
+//    }
+//    CNR_RETURN_TRUE(m_logger);
+//  }
+
 };
 
 

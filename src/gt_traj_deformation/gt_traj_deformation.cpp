@@ -8,7 +8,6 @@
 #include <std_msgs/Float32.h>
 #include <sensor_msgs/JointState.h>
 #include <rosdyn_core/primitives.h>
-#include <nav_msgs/Path.h>.h>
 
 PLUGINLIB_EXPORT_CLASS(cnr::control::GtTrajDeformation  , controller_interface::ControllerBase)
 
@@ -114,32 +113,48 @@ bool GtTrajDeformation::doInit()
   this->template add_subscriber<geometry_msgs::WrenchStamped>(
         external_wrench_topic,5,boost::bind(&GtTrajDeformation::callback,this,_1), false);
 
+  if(this->getControllerNh().hasParam("pose_target"))
+  {
   std::string pose_target;
   GET_AND_RETURN( this->getControllerNh(), "pose_target"  , pose_target);
 
   this->template add_subscriber<geometry_msgs::PoseStamped>(
-        pose_target,5,boost::bind(&GtTrajDeformation::setTargetCallback,this,_1), false);
+        pose_target,5,boost::bind(&GtTrajDeformation::setTargetPoseCallback,this,_1), false);
+  }
+  else if(this->getControllerNh().hasParam("twist_target"))
+  {
+      std::string twist_target;
+      GET_AND_RETURN( this->getControllerNh(), "twist_target"  , twist_target);
+      this->template add_subscriber<geometry_msgs::TwistStamped>(
+            twist_target,5,boost::bind(&GtTrajDeformation::setTargetTwistCallback,this,_1), false);
+  }
+  else
+  {
+      CNR_WARN(this->logger(),"no pose or twist topic specified");
+  }
 
   filtered_wrench_base_pub = this->template add_publisher<geometry_msgs::WrenchStamped>("filtered_wrench_base",5);
   wrench_base_pub          = this->template add_publisher<geometry_msgs::WrenchStamped>("wrench_base",5);
   wrench_tool_pub          = this->template add_publisher<geometry_msgs::WrenchStamped>("wrench_tool",5);
 
   cart_pos_ref_pub  = this->template add_publisher<geometry_msgs::PoseStamped>("pose_ref"    ,5);
-  cart_pos_cur_pub  = this->template add_publisher<geometry_msgs::PoseStamped>("pose_cur"    ,5);
+  cart_pos_cur_pub  = this->template add_publisher<geometry_msgs::PoseStamped>("current_pose",5);
   cart_pos_traj_pub = this->template add_publisher<geometry_msgs::PoseStamped>("pose_traj"   ,5);
   joint_sp_pub      = this->template add_publisher<sensor_msgs::JointState>   ("joint_sp"    ,5);
   alpha_pub         = this->template add_publisher<std_msgs::Float32>         ("alpha"       ,5);
   human_wrench_pub  = this->template add_publisher<std_msgs::Float32>         ("wrench_norm" ,5);
   D_pub             = this->template add_publisher<std_msgs::Float32>         ("var_D"       ,5);
   K_pub             = this->template add_publisher<std_msgs::Float32>         ("var_K"       ,5);
-  path_pub          = this->template add_publisher<nav_msgs::Path>            ("ref_traj"    ,5);
 
+  std::string output_twist_name;
+  GET_AND_DEFAULT( this->getControllerNh(), "output_twist_ns" , output_twist_name, this->getControllerNamespace()+"/target_cart_twist" );
+  target_twist_pub_ = this->template add_publisher<geometry_msgs::TwistStamped>(output_twist_name,1000);
 
 
   std::string gripper_name;
   GET_AND_DEFAULT(this->getControllerNh(),"gripper_name", gripper_name, "gripper");
   gripper_name += "/goal";
-//  activate_gripper_pub = this->template add_publisher<control_msgs::GripperCommandActionGoal>(gripper_name,5);
+  activate_gripper_pub = this->template add_publisher<control_msgs::GripperCommandActionGoal>(gripper_name,5);
 
   human_u_pub = this->template add_publisher<geometry_msgs::WrenchStamped>("human_u",5);
   robot_u_pub = this->template add_publisher<geometry_msgs::WrenchStamped>("robot_u",5);
@@ -159,7 +174,6 @@ bool GtTrajDeformation::doInit()
       }
   }
   m_dq_sp = m_vel_fitler_sp.getUpdatedValue();
-  m_q_sp = this->getPosition();
 
   m_wrench_deadband .setZero();
   m_w_b             .setZero();
@@ -231,8 +245,6 @@ bool GtTrajDeformation::doInit()
   else
       D_ = Eigen::Vector6d( D_r.data() );
 
-  CNR_FATAL(this->logger(),"damping: "<<D_.transpose());
-
   m_mass      = M_(0);
   m_damping   = D_(0);
   m_stiffness = K_(0);
@@ -244,7 +256,7 @@ bool GtTrajDeformation::doInit()
   GET_PARAM_VECTOR_AND_RETURN ( this->getControllerNh(), "Rr"   , Rr   , 6 , "<" );
 
   // system params initi
-  m_X .resize(6);
+  //m_X .resize(6);
   m_dX.resize(6);
 
   m_Q_hat.setZero();
@@ -294,7 +306,6 @@ bool GtTrajDeformation::doInit()
   m_S << m_A,m_B,
          m_C,m_D;
 
-  ROS_FATAL_STREAM("\n"<<m_S);
   m_w_b_init = false;
 
   GET_AND_RETURN(this->getControllerNh(), "sigmoid_width" , m_width );
@@ -316,28 +327,20 @@ bool GtTrajDeformation::doInit()
  * @brief GtTrajDeformation::doStarting
  * @param time
  */
-bool GtTrajDeformation::doStarting(const ros::Time& /*time*/)
+bool GtTrajDeformation::doStarting(const ros::Time& time)
 {
   CNR_TRACE_START(this->logger(),"Starting Controller");
 
-  m_q_sp = this->getPosition();
+//  vc_.doStarting(time);
 
-  Eigen::Vector3d x = this->chainState().toolPose().translation();
 
   T_b_t_ = this->chainState().toolPose();
 
-  m_X << x[0],x[1],x[2],0,0,0;
-
-  ROS_FATAL_STREAM("m_X 1: "<<m_X.transpose()<<"\n\n\n\n\n\n\n\n\n");
-  m_X_zero = m_X;
-  m_X_ref = m_X;
-  m_dX.setZero();
-
-  m_X_sp(0) = 0;
-  m_X_sp(1) = 0;
-  m_X_sp(2) = 0;
+  m_X_sp.setZero();
 
   m_dq_sp = 0 * this->getVelocity();
+  init_X_ = true;
+  count_update_ = 0;
 
   CNR_RETURN_TRUE(this->logger());
 }
@@ -346,9 +349,10 @@ bool GtTrajDeformation::doStarting(const ros::Time& /*time*/)
  * @brief GtTrajDeformation::stopping
  * @param time
  */
-bool GtTrajDeformation::doStopping(const ros::Time& /*time*/)
+bool GtTrajDeformation::doStopping(const ros::Time& time)
 {
   CNR_TRACE_START(this->logger(),"Stopping Controller");
+//  vc_.doStopping(time);
   CNR_RETURN_TRUE(this->logger());
 }
 
@@ -358,12 +362,29 @@ bool GtTrajDeformation::doStopping(const ros::Time& /*time*/)
  * @param period
  * @return
  */
-bool GtTrajDeformation::doUpdate(const ros::Time& /*time*/, const ros::Duration& period)
+bool GtTrajDeformation::doUpdate(const ros::Time& time, const ros::Duration& period)
 {
-    auto start = std::chrono::steady_clock::now();
+  auto start = std::chrono::steady_clock::now();
 
   CNR_TRACE_START_THROTTLE_DEFAULT(this->logger());
   std::stringstream report;
+
+  count_update_++;
+
+  if (init_X_)
+  {
+      Eigen::Vector3d x = this->chainState().toolPose().translation();
+      m_X << x[0],x[1],x[2],0,0,0;
+      m_X_zero = m_X;
+      m_X_ref = m_X;
+      m_dX.setZero();
+
+      m_q_sp = this->getPosition();
+      ROS_FATAL_STREAM("mQSP: "<<m_q_sp.transpose());
+      ROS_FATAL_STREAM("m_X: "<<m_X.transpose());
+
+      init_X_ = false;
+  }
 
   std::lock_guard<std::mutex> lock(m_mtx);
 //  rosdyn::VectorXd dq_sp = m_dq_sp;
@@ -396,56 +417,6 @@ bool GtTrajDeformation::doUpdate(const ros::Time& /*time*/, const ros::Duration&
   alpha_x = alpha;
   alpha_y = alpha;
 
-//  ----------------- cgt varibale velocity ----------------------------------------------------
-
-//  Eigen::Vector3d velocity;
-//  velocity << m_dX(0),m_dX(1);
-//  double norm_velocity = velocity.norm();
-//  double alpha   = sigma(norm_velocity);
-
-//  ---------------- variable damping and stiffness ------------------------------------
-
-//  Eigen::Matrix2d D;
-//  D(0,0) = D_(0)*exp(-exponential_*std::fabs(norm_wrench));
-//  D(1,1) = D_(1)*exp(-exponential_*std::fabs(norm_wrench));
-
-//  if(D(0,0)<5)
-//      D(0,0)=min_val_;
-//  if(D(1,1)<5)
-//      D(1,1)=min_val_;
-
-//  Eigen::Matrix2d K_imp;
-//  K_imp(0,0) = K_(0)*exp(-exponential_*std::fabs(norm_wrench));
-//  K_imp(1,1) = K_(1)*exp(-exponential_*std::fabs(norm_wrench));
-
-//  if(K_imp(0,0)<5)
-//      K_imp(0,0)=min_val_;
-//  if(K_imp(1,1)<5)
-//      K_imp(1,1)=min_val_;
-
-
-//  Eigen::Matrix2d M;
-//  M(0,0) = M_(0);
-//  M(1,1) = M_(1);
-
-//  Eigen::Vector3d stiff;
-//  stiff << -K_imp(0)/M(0), -K_imp(1)/M(1), -K_imp(2)/M(2);
-//  m_A.block(3,0,3,3) = stiff.asDiagonal();
-
-//  Eigen::Vector3d damp;
-//  damp << -D(0)/M(0), -D(1)/M(1), -D(2)/M(2);
-//  m_A.block(3,3,3,3) = damp.asDiagonal();
-
-//  m_S << m_A,m_B,
-//         m_C,m_D;
-
-//  double alpha_traj = sigmaOne(norm_wrench);
-//  double alpha = 0.99;
-
-//  ------------------------------------------------
-
-
-
   Eigen::MatrixXd A = m_A;
   Eigen::MatrixXd B = m_B;
   Eigen::MatrixXd Q; Q.resize(m_Q_hat.rows(),m_Q_hat.cols()); Q.setZero();
@@ -464,13 +435,11 @@ bool GtTrajDeformation::doUpdate(const ros::Time& /*time*/, const ros::Duration&
 
   Eigen::MatrixXd K = R.inverse()*B.transpose()*P;
 
-  m_X_ref(0) = m_X_zero(0) + m_X_sp(0);
-  m_X_ref(1) = m_X_zero(1) + m_X_sp(1);
-  m_X_ref(2) = m_X_zero(2) + m_X_sp(2);
+  m_X_ref = m_X_zero + m_X_sp;
 
   rosdyn::VectorXd Xi = m_X-m_X_zero;
 
-  Eigen::Vector4d ufb = -K*(Xi);
+  Eigen::VectorXd ufb = -K*(Xi);
 
   Eigen::Vector6d one;
   one << 1,1,1,1,1,1;
@@ -502,21 +471,6 @@ bool GtTrajDeformation::doUpdate(const ros::Time& /*time*/, const ros::Duration&
   double var_K = m_stiffness + K(3,0) + ff_gain(3,0);
   double var_D = m_damping   + K(3,3);
 
-  CNR_FATAL_THROTTLE(this->logger(),5,"m_stiffness: "<<m_damping);
-  CNR_FATAL_THROTTLE(this->logger(),5,"K(3,0): "<<K(3,3));
-
-  Eigen::Vector3d u_shr;
-  u_shr << uff.segment(0,3)+uff.segment(3,3);
-
-//  Eigen::Vector2d uh;
-//  uh(0) = ufb(0) + (1 - alpha)*u_shr(0);
-//  uh(1) = ufb(1) + (1 - alpha)*u_shr(1);
-
-//  Eigen::Vector2d ur;
-//  ur(0) = ufb(2) + alpha*u_shr(0);
-//  ur(1) = ufb(3) + alpha*u_shr(1);
-
-
   Eigen::Vector3d uh;
   uh(0) = ufb(0) + uff(0);
   uh(1) = ufb(1) + uff(1);
@@ -533,6 +487,7 @@ bool GtTrajDeformation::doUpdate(const ros::Time& /*time*/, const ros::Duration&
 
   m_X = Xi + m_X_zero;
 
+
   Eigen::Vector6d dx;
   dx.setZero();
   dx(0) = m_dX(0);
@@ -545,7 +500,8 @@ bool GtTrajDeformation::doUpdate(const ros::Time& /*time*/, const ros::Duration&
   pinv_J.setThreshold ( 1e-2 );
   if(pinv_J.rank()<6)
   {
-    CNR_FATAL(this->logger(),"rank: "<<pinv_J.rank()<<"\nJacobian\n"<<J_b);
+    CNR_FATAL_THROTTLE(this->logger(),1.0,"count update: "<<count_update_<<", rank: "<<pinv_J.rank());
+    dx.setZero();
   }
 
   Eigen::JacobiSVD<Eigen::MatrixXd> svd(J_b, Eigen::ComputeThinU | Eigen::ComputeThinV);
@@ -554,8 +510,43 @@ bool GtTrajDeformation::doUpdate(const ros::Time& /*time*/, const ros::Duration&
   else if (svd.singularValues()(0)/svd.singularValues()(svd.cols()-1) > 1e2)
     ROS_WARN_THROTTLE(1,"SINGULARITY POINT");
 
+  geometry_msgs::TwistStampedPtr twist_msg(new geometry_msgs::TwistStamped());
+
+  twist_msg->twist.linear .x = dx(0);
+  twist_msg->twist.linear .y = dx(1);
+  twist_msg->twist.linear .z = dx(2);
+  twist_msg->twist.angular.x = dx(3);
+  twist_msg->twist.angular.y = dx(4);
+  twist_msg->twist.angular.z = dx(5);
+  twist_msg->header.frame_id = "ur5_base_link";
+  twist_msg->header.stamp    = ros::Time::now();
+
+//  vc_.twistSetPointCallback(twist_msg);
+//  vc_.doUpdate(time, period);
+  this->publish(target_twist_pub_, twist_msg);
+
+
+
   rosdyn::VectorXd dq_sp = svd.solve(dx);
   q_sp = m_q_sp  + dq_sp  * period.toSec();
+
+
+  if(std::fabs(q_sp[0])>100)
+ {
+  CNR_FATAL_THROTTLE(this->logger(),1.0,"count update: "<<count_update_);
+  CNR_FATAL_THROTTLE(this->logger(),1.0,"m_X_prev: "<<m_X_prev.transpose());
+  CNR_FATAL_THROTTLE(this->logger(),1.0,"m_X: "<<m_X.transpose());
+  CNR_FATAL_THROTTLE(this->logger(),1.0,"m_x0: "<<m_X_zero.transpose());
+  CNR_FATAL_THROTTLE(this->logger(),1.0,"m_xref: "<<m_X_ref.transpose());
+  CNR_FATAL_THROTTLE(this->logger(),1.0,"m_xsp: "<<m_X_sp.transpose());
+  CNR_FATAL_THROTTLE(this->logger(),1.0,"u_fb: "<<ufb.transpose());
+  CNR_FATAL_THROTTLE(this->logger(),1.0,"u_ff: "<<uff.transpose());
+  CNR_FATAL_THROTTLE(this->logger(),1.0,"human: "<<human_wrench.transpose());
+  CNR_FATAL_THROTTLE(this->logger(),1.0,"K:\n "<<K);
+  CNR_RETURN_FALSE(this->logger());
+}
+
+  m_X_prev = m_X;
 
   m_q_sp  = q_sp;
   m_dq_sp  = dq_sp;
@@ -593,16 +584,6 @@ bool GtTrajDeformation::doUpdate(const ros::Time& /*time*/, const ros::Duration&
   traj_pos.pose.position.x = m_X_ref(0);
   traj_pos.pose.position.y = m_X_ref(1);
   traj_pos.pose.position.z = m_X_ref(2);
-
-//  nav_msgs::Path ref_msg;
-
-//  ref_msg.header.frame_id = "ur5_base_link";
-//  ref_msg.header.stamp = stamp;
-
-//  traj_path_.push_back(traj_pos);
-
-//  ref_msg.poses = traj_path_;
-
 
   std_msgs::Float32 alpha_msg;
   alpha_msg.data = alpha;
@@ -652,7 +633,6 @@ bool GtTrajDeformation::doUpdate(const ros::Time& /*time*/, const ros::Duration&
   this->publish(robot_u_pub      ,ru_msg);
   this->publish(D_pub            ,D_msg);
   this->publish(K_pub            ,K_msg);
-//  this->publish(path_pub         ,ref_msg);
 
 
 
@@ -760,14 +740,14 @@ bool GtTrajDeformation::doUpdate(const ros::Time& /*time*/, const ros::Duration&
         control_msgs::GripperCommandActionGoal goal;
         goal.goal.command.position = -0.01;
         goal.goal.command.max_effort = 30.0;
-//        this->publish(activate_gripper_pub,goal);
+        this->publish(activate_gripper_pub,goal);
     }
     else if (wrench_s(5)<-1.5)
     {
         control_msgs::GripperCommandActionGoal goal;
         goal.goal.command.position = 0.08;
         goal.goal.command.max_effort = 30.0;
-//        this->publish(activate_gripper_pub,goal);
+        this->publish(activate_gripper_pub,goal);
     }
 
   }
@@ -814,23 +794,48 @@ bool GtTrajDeformation::doUpdate(const ros::Time& /*time*/, const ros::Duration&
     return true;
   }
 
-  void GtTrajDeformation::setTargetCallback(const geometry_msgs::PoseStampedConstPtr& msg)
+  void GtTrajDeformation::setTargetPoseCallback(const geometry_msgs::PoseStampedConstPtr& msg)
   {
     try
     {
       geometry_msgs::PoseStamped tmp_msg=*msg;
       if (!m_target_ok)
       {
-          m_X_sp(0) = 0;
-          m_X_sp(1) = 0;
-          m_X_sp(2) = 0;
+          m_X_sp.setZero();
           m_target_ok = true;
       }
 
       {
+          m_X_sp.setZero();
           m_X_sp(0) = tmp_msg.pose.position.x;
           m_X_sp(1) = tmp_msg.pose.position.y;
           m_X_sp(2) = tmp_msg.pose.position.z;
+      }
+
+    }
+    catch(...)
+    {
+      ROS_ERROR("Something wrong in target callback");
+      m_target_ok=false;
+    }
+  }
+
+  void GtTrajDeformation::setTargetTwistCallback(const geometry_msgs::TwistStampedConstPtr& msg)
+  {
+    try
+    {
+      geometry_msgs::TwistStamped tmp_msg=*msg;
+      if (!m_target_ok)
+      {
+          m_X_sp.setZero();
+          m_target_ok = true;
+      }
+
+      {
+          m_X_sp.setZero();
+          m_X_sp(0) += tmp_msg.twist.linear.x * m_sampling_period;
+          m_X_sp(1) += tmp_msg.twist.linear.y * m_sampling_period;
+          m_X_sp(2) += tmp_msg.twist.linear.z * m_sampling_period;
       }
 
     }

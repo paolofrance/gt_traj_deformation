@@ -45,6 +45,8 @@
 
   <depend>name_sorting</depend>
   <depend>joint_limits_interface</depend>
+  <depend>cnr_cartesian_velocity_controller</depend>
+
 
 
   <!-- The export tag contains other, unspecified, tags -->

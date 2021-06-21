@@ -19,6 +19,7 @@ find_package(catkin REQUIRED COMPONENTS
   std_msgs
   name_sorting
   joint_limits_interface
+  cnr_cartesian_velocity_controller
 )
 
 find_package(Eigen3 3.3 REQUIRED NO_MODULE)
@@ -30,6 +31,7 @@ catkin_package(
  INCLUDE_DIRS include
  LIBRARIES gt_traj_deformation
  CATKIN_DEPENDS urdf cnr_controller_interface state_space_filters cnr_hardware_interface pluginlib sensor_msgs std_msgs name_sorting joint_limits_interface
+ cnr_cartesian_velocity_controller
  DEPENDS EIGEN3
 )
 
