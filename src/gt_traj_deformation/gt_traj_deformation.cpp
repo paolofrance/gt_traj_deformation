@@ -142,7 +142,7 @@ bool GtTrajDeformation::doInit()
   cart_pos_traj_pub = this->template add_publisher<geometry_msgs::PoseStamped>("pose_traj"   ,5);
   joint_sp_pub      = this->template add_publisher<sensor_msgs::JointState>   ("joint_sp"    ,5);
   alpha_pub         = this->template add_publisher<std_msgs::Float32>         ("alpha"       ,5);
-  human_wrench_pub  = this->template add_publisher<std_msgs::Float32>         ("wrench_norm" ,5);
+  human_wrench_pub  = this->template add_publisher<std_msgs::Float32>         ("human_wrench" ,5);
   D_pub             = this->template add_publisher<std_msgs::Float32>         ("var_D"       ,5);
   K_pub             = this->template add_publisher<std_msgs::Float32>         ("var_K"       ,5);
 
@@ -467,6 +467,14 @@ bool GtTrajDeformation::doUpdate(const ros::Time& time, const ros::Duration& per
   Eigen::MatrixXd ff_gain;
   ff_gain = kk*pinS*g;
   Eigen::VectorXd uff = ff_gain*(m_X_ref - m_X_zero);
+
+
+  ROS_FATAL_STREAM_THROTTLE(1.0,"m_stiffness: "<<m_stiffness);
+  ROS_FATAL_STREAM_THROTTLE(1.0,"K(3,0): "<<K(3,0));
+  ROS_FATAL_STREAM_THROTTLE(1.0,"ff_gain(3,0): "<<ff_gain(3,0));
+  ROS_FATAL_STREAM_THROTTLE(1.0,"K: "<<K);
+  ROS_FATAL_STREAM_THROTTLE(1.0,"ff_gain: "<<ff_gain);
+
 
   double var_K = m_stiffness + K(3,0) + ff_gain(3,0);
   double var_D = m_damping   + K(3,3);
