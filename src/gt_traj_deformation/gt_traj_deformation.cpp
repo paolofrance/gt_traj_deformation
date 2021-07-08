@@ -314,11 +314,6 @@ bool GtTrajDeformation::doInit()
   GET_AND_RETURN(this->getControllerNh(), "sigmoid_max_y" , m_max_y );
 
   GET_AND_RETURN(this->getControllerNh(), "exponential" , exponential_);
-  GET_AND_RETURN(this->getControllerNh(), "min_val" , min_val_);
-//  gripper_action_.reset(new actionlib::SimpleActionClient<control_msgs::GripperCommandAction>(gripper_name, true));
-//  CNR_INFO(this->logger(),"Waiting for "<<gripper_name<<" action server to start.");
-//  gripper_action_->waitForServer();
-
 
   CNR_RETURN_TRUE(this->logger());
 }
@@ -398,42 +393,35 @@ bool GtTrajDeformation::doUpdate(const ros::Time& time, const ros::Duration& per
   else
     human_wrench << m_w_b(0), m_w_b(1), m_w_b(2);
 
-  double norm_wrench = human_wrench.norm();
+  Eigen::Vector2d wrench_xy;
+  wrench_xy << human_wrench(0), human_wrench(1);
 
-  double alpha_x = sigma(human_wrench(0));
-  double alpha_y = sigma(human_wrench(1));
-  double alpha_z = sigma(human_wrench(2));
-
-  Eigen::Vector2d xy_wrench;
-  xy_wrench << human_wrench(0), human_wrench(1);
-
-
+  double norm_wrench = wrench_xy.norm();
 
 //  ----------------- cgt varibale wrench ----------------------------------------------------
 
-  double alpha = sigma(xy_wrench.norm());
-  double alpha_traj = sigmaOne(norm_wrench);
+//  double alpha = sigma(norm_wrench);
+  double alpha = 0.99*exp(-exponential_*std::fabs(norm_wrench));
 
-  alpha_x = alpha;
-  alpha_y = alpha;
 
   Eigen::MatrixXd A = m_A;
   Eigen::MatrixXd B = m_B;
+
   Eigen::MatrixXd Q; Q.resize(m_Q_hat.rows(),m_Q_hat.cols()); Q.setZero();
-  Q.block(0,0,2,2) = alpha_x*(m_Q_hat).block(0,0,2,2)+(1-alpha_x)*m_Qr.block(0,0,2,2);
-  Q.block(2,2,2,2) = alpha_y*(m_Q_hat).block(2,2,2,2)+(1-alpha_y)*m_Qr.block(2,2,2,2);
-  Q.block(4,4,2,2) = alpha_z*(m_Q_hat).block(4,4,2,2)+(1-alpha_z)*m_Qr.block(4,4,2,2);
+  Q = alpha * m_Q_hat +(1-alpha) * m_Qr;
 
   Eigen::MatrixXd R; R.resize(m_R_hat.rows(),m_R_hat.cols()); R.setZero();
-  R.block(0,0,2,2) = alpha_x*(m_R_hat).block(0,0,2,2)+(1-alpha_x)*m_Rr.block(0,0,2,2);
-  R.block(2,2,2,2) = alpha_y*(m_R_hat).block(2,2,2,2)+(1-alpha_z)*m_Rr.block(2,2,2,2);
-  R.block(4,4,2,2) = alpha_z*(m_R_hat).block(4,4,2,2)+(1-alpha_z)*m_Rr.block(4,4,2,2);
+  R = alpha * m_R_hat +(1-alpha) * m_Rr;
+
+  ROS_FATAL_STREAM_THROTTLE(1.0,"Q:\n "<<Q);
+  ROS_FATAL_STREAM_THROTTLE(1.0,"R: \n"<<R);
 
   Eigen::MatrixXd P = Eigen::MatrixXd::Zero(6,6);
 
   solveRiccati(A, B, Q, R, P);
 
   Eigen::MatrixXd K = R.inverse()*B.transpose()*P;
+  ROS_FATAL_STREAM_THROTTLE(1.0,"K: \n"<<K);
 
   m_X_ref = m_X_zero + m_X_sp;
 
@@ -469,14 +457,14 @@ bool GtTrajDeformation::doUpdate(const ros::Time& time, const ros::Duration& per
   Eigen::VectorXd uff = ff_gain*(m_X_ref - m_X_zero);
 
 
-  ROS_FATAL_STREAM_THROTTLE(1.0,"m_stiffness: "<<m_stiffness);
-  ROS_FATAL_STREAM_THROTTLE(1.0,"K(3,0): "<<K(3,0));
-  ROS_FATAL_STREAM_THROTTLE(1.0,"ff_gain(3,0): "<<ff_gain(3,0));
-  ROS_FATAL_STREAM_THROTTLE(1.0,"K: "<<K);
-  ROS_FATAL_STREAM_THROTTLE(1.0,"ff_gain: "<<ff_gain);
+//  ROS_FATAL_STREAM_THROTTLE(1.0,"m_stiffness: "<<m_stiffness);
+//  ROS_FATAL_STREAM_THROTTLE(1.0,"K(3,0): "<<K(3,0));
+//  ROS_FATAL_STREAM_THROTTLE(1.0,"ff_gain(3,0): "<<ff_gain(3,0));
+//  ROS_FATAL_STREAM_THROTTLE(1.0,"K: "<<K);
+//  ROS_FATAL_STREAM_THROTTLE(1.0,"ff_gain: "<<ff_gain);
 
 
-  double var_K = m_stiffness + K(3,0) + ff_gain(3,0);
+  double var_K = m_stiffness + K(3,0);
   double var_D = m_damping   + K(3,3);
 
   Eigen::Vector3d uh;
@@ -763,7 +751,7 @@ bool GtTrajDeformation::doUpdate(const ros::Time& time, const ros::Duration& per
 
   double GtTrajDeformation::sigma(double x)
   {
-    return m_max_y -(m_height/(1+exp(-m_width*(x-m_half_x))));
+    return m_max_y - (m_height/(1+exp(-m_width*(x-m_half_x))));
   }
 
   double GtTrajDeformation::sigmaOne(double x)
