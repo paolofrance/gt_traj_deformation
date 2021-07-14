@@ -400,8 +400,8 @@ bool GtTrajDeformation::doUpdate(const ros::Time& time, const ros::Duration& per
 
 //  ----------------- cgt varibale wrench ----------------------------------------------------
 
-//  double alpha = sigma(norm_wrench);
-  double alpha = 0.99*exp(-exponential_*std::fabs(norm_wrench));
+  double alpha = sigma(norm_wrench);
+//  double alpha = 0.99*exp(-exponential_*std::fabs(norm_wrench));
 
 
   Eigen::MatrixXd A = m_A;
@@ -463,6 +463,9 @@ bool GtTrajDeformation::doUpdate(const ros::Time& time, const ros::Duration& per
 //  ROS_FATAL_STREAM_THROTTLE(1.0,"K: "<<K);
 //  ROS_FATAL_STREAM_THROTTLE(1.0,"ff_gain: "<<ff_gain);
 
+
+  ROS_FATAL_STREAM_THROTTLE(1.0,"uff: "<<uff.transpose());
+  ROS_FATAL_STREAM_THROTTLE(1.0,"ufb: "<<ufb.transpose());
 
   double var_K = m_stiffness + K(3,0);
   double var_D = m_damping   + K(3,3);
