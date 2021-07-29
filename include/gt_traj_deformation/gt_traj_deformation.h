@@ -136,7 +136,6 @@ protected:
   std::shared_ptr<ros_helper::SubscriptionNotifier<geometry_msgs::PoseStamped>> m_target_sub;
 
   double sigma(double x);
-  double sigmaOne(double x);
   bool solveRiccati(const Eigen::MatrixXd &A,
                                const Eigen::MatrixXd &B,
                                const Eigen::MatrixXd &Q,

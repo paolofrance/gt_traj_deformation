@@ -249,7 +249,7 @@ bool GtTrajDeformation::doInit()
   m_damping   = D_(0);
   m_stiffness = K_(0);
 
- std::vector<double> Q_hat(6,0), R_hat(6,0), Qr(6,0), Rr(6,0);
+  std::vector<double> Q_hat(6,0), R_hat(6,0), Qr(6,0), Rr(6,0);
   GET_PARAM_VECTOR_AND_RETURN ( this->getControllerNh(), "Q_hat", Q_hat, 6 , "<" );
   GET_PARAM_VECTOR_AND_RETURN ( this->getControllerNh(), "R_hat", R_hat, 6 , "<" );
   GET_PARAM_VECTOR_AND_RETURN ( this->getControllerNh(), "Qr"   , Qr   , 6 , "<" );
@@ -470,6 +470,9 @@ bool GtTrajDeformation::doUpdate(const ros::Time& time, const ros::Duration& per
   double var_K = m_stiffness + K(3,0);
   double var_D = m_damping   + K(3,3);
 
+  ROS_WARN_STREAM_THROTTLE(1.0,"damp: "<< m_damping);
+  ROS_WARN_STREAM_THROTTLE(1.0,"varD ~ K3.3: "<< K(3,3));
+
   Eigen::Vector3d uh;
   uh(0) = ufb(0) + uff(0);
   uh(1) = ufb(1) + uff(1);
@@ -491,7 +494,6 @@ bool GtTrajDeformation::doUpdate(const ros::Time& time, const ros::Duration& per
   dx.setZero();
   dx(0) = m_dX(0);
   dx(1) = m_dX(1);
-  dx(2) = m_dX(2)*0;
 
   Eigen::Matrix6Xd J_b = m_chain_bt->getJacobian(m_q_sp);
 
@@ -520,9 +522,28 @@ bool GtTrajDeformation::doUpdate(const ros::Time& time, const ros::Duration& per
   twist_msg->header.frame_id = "ur5_base_link";
   twist_msg->header.stamp    = ros::Time::now();
 
-//  vc_.twistSetPointCallback(twist_msg);
-//  vc_.doUpdate(time, period);
   this->publish(target_twist_pub_, twist_msg);
+
+
+// TODO :: CLIK
+
+//  Eigen::Affine3d Tbt=m_chain_bt->getTransformation(m_q_sp);
+//  Eigen::Affine3d Tba=m_chain_bt->getTransformation(this->getPosition());
+//  Eigen::Vector6d cart_error_in_b;
+//  rosdyn::getFrameDistance(Tbt,Tba,cart_error_in_b);
+//  double Kp=1;
+
+//  cart_error_in_b(2) = 0;
+//  cart_error_in_b(3) = 0;
+//  cart_error_in_b(4) = 0;
+//  cart_error_in_b(5) = 0;
+
+//  rosdyn::VectorXd dq_sp = svd.solve(dx + Kp*cart_error_in_b);
+
+//  rosdyn::VectorXd joint_error = svd.solve(Kp*cart_error_in_b);
+
+//  ROS_FATAL_STREAM_THROTTLE(1.0,"cart_error: "<<cart_error_in_b.transpose());
+//  ROS_FATAL_STREAM_THROTTLE(1.0,"joint_error: "<<joint_error.transpose());
 
 
 
@@ -755,11 +776,6 @@ bool GtTrajDeformation::doUpdate(const ros::Time& time, const ros::Duration& per
   double GtTrajDeformation::sigma(double x)
   {
     return m_max_y - (m_height/(1+exp(-m_width*(x-m_half_x))));
-  }
-
-  double GtTrajDeformation::sigmaOne(double x)
-  {
-    return 1 -(1/(1+exp(-m_width*(x-m_half_x))));
   }
 
   bool GtTrajDeformation::solveRiccati(const Eigen::MatrixXd &A,
