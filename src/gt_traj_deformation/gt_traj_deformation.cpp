@@ -142,7 +142,7 @@ bool GtTrajDeformation::doInit()
   cart_pos_traj_pub = this->template add_publisher<geometry_msgs::PoseStamped>("pose_traj"   ,5);
   joint_sp_pub      = this->template add_publisher<sensor_msgs::JointState>   ("joint_sp"    ,5);
   alpha_pub         = this->template add_publisher<std_msgs::Float32>         ("alpha"       ,5);
-  human_wrench_pub  = this->template add_publisher<std_msgs::Float32>         ("human_wrench" ,5);
+  human_wrench_pub  = this->template add_publisher<std_msgs::Float32>         ("human_wrench",5);
   D_pub             = this->template add_publisher<std_msgs::Float32>         ("var_D"       ,5);
   K_pub             = this->template add_publisher<std_msgs::Float32>         ("var_K"       ,5);
 
@@ -385,8 +385,6 @@ bool GtTrajDeformation::doUpdate(const ros::Time& time, const ros::Duration& per
 //  rosdyn::VectorXd dq_sp = m_dq_sp;
   rosdyn::VectorXd q_sp = m_q_sp;
 
-  ROS_DEBUG_STREAM_THROTTLE(.2,"ext wrench: "<<m_w_b.transpose());
-
   Eigen::Vector3d human_wrench;
   if (m_use_filtered_wrench)
     human_wrench << m_w_b_filt(0), m_w_b_filt(1), m_w_b_filt(2);
@@ -413,15 +411,11 @@ bool GtTrajDeformation::doUpdate(const ros::Time& time, const ros::Duration& per
   Eigen::MatrixXd R; R.resize(m_R_hat.rows(),m_R_hat.cols()); R.setZero();
   R = alpha * m_R_hat +(1-alpha) * m_Rr;
 
-  ROS_FATAL_STREAM_THROTTLE(1.0,"Q:\n "<<Q);
-  ROS_FATAL_STREAM_THROTTLE(1.0,"R: \n"<<R);
-
   Eigen::MatrixXd P = Eigen::MatrixXd::Zero(6,6);
 
   solveRiccati(A, B, Q, R, P);
 
   Eigen::MatrixXd K = R.inverse()*B.transpose()*P;
-  ROS_FATAL_STREAM_THROTTLE(1.0,"K: \n"<<K);
 
   m_X_ref = m_X_zero + m_X_sp;
 
@@ -456,22 +450,8 @@ bool GtTrajDeformation::doUpdate(const ros::Time& time, const ros::Duration& per
   ff_gain = kk*pinS*g;
   Eigen::VectorXd uff = ff_gain*(m_X_ref - m_X_zero);
 
-
-//  ROS_FATAL_STREAM_THROTTLE(1.0,"m_stiffness: "<<m_stiffness);
-//  ROS_FATAL_STREAM_THROTTLE(1.0,"K(3,0): "<<K(3,0));
-//  ROS_FATAL_STREAM_THROTTLE(1.0,"ff_gain(3,0): "<<ff_gain(3,0));
-//  ROS_FATAL_STREAM_THROTTLE(1.0,"K: "<<K);
-//  ROS_FATAL_STREAM_THROTTLE(1.0,"ff_gain: "<<ff_gain);
-
-
-  ROS_FATAL_STREAM_THROTTLE(1.0,"uff: "<<uff.transpose());
-  ROS_FATAL_STREAM_THROTTLE(1.0,"ufb: "<<ufb.transpose());
-
   double var_K = m_stiffness + K(3,0);
   double var_D = m_damping   + K(3,3);
-
-  ROS_WARN_STREAM_THROTTLE(1.0,"damp: "<< m_damping);
-  ROS_WARN_STREAM_THROTTLE(1.0,"varD ~ K3.3: "<< K(3,3));
 
   Eigen::Vector3d uh;
   uh(0) = ufb(0) + uff(0);
@@ -531,12 +511,7 @@ bool GtTrajDeformation::doUpdate(const ros::Time& time, const ros::Duration& per
 //  Eigen::Affine3d Tba=m_chain_bt->getTransformation(this->getPosition());
 //  Eigen::Vector6d cart_error_in_b;
 //  rosdyn::getFrameDistance(Tbt,Tba,cart_error_in_b);
-//  double Kp=1;
-
-//  cart_error_in_b(2) = 0;
-//  cart_error_in_b(3) = 0;
-//  cart_error_in_b(4) = 0;
-//  cart_error_in_b(5) = 0;
+//  double Kp=3;
 
 //  rosdyn::VectorXd dq_sp = svd.solve(dx + Kp*cart_error_in_b);
 
@@ -548,6 +523,8 @@ bool GtTrajDeformation::doUpdate(const ros::Time& time, const ros::Duration& per
 
 
   rosdyn::VectorXd dq_sp = svd.solve(dx);
+
+
   q_sp = m_q_sp  + dq_sp  * period.toSec();
 
 
